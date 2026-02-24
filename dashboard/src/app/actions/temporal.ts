@@ -6,26 +6,38 @@ import crypto from 'crypto';
 // -------------------------------------------------------------
 // [Phase 13] Next.js Server Actions (Temporal Client Integration)
 // -------------------------------------------------------------
-// 브라우저에 Temporal Client 의존성이나 보안 크리덴셜을 노출하지 않고
-// 오직 백엔드 서버에서만 안전하게 워크플로우를 타격(Trigger)합니다.
-// -------------------------------------------------------------
+
+// CTO 지적사항 반영 1: gRPC 커넥션 누수 방지를 위한 전역 싱글턴 패턴 (Serverless 방어)
+// 글로벌 객체를 재사용하여 Next.js HMR 분실 방지 및 Vercel 환경 커넥션 풀 공유를 지원합니다.
+const globalForTemporal = globalThis as unknown as {
+    temporalConnection: Connection | undefined;
+    temporalClient: Client | undefined;
+};
+
+async function getTemporalClient() {
+    if (!globalForTemporal.temporalConnection) {
+        console.log('[Server Action] 🔌 Initializing new Temporal gRPC Connection...');
+        globalForTemporal.temporalConnection = await Connection.connect({
+            address: process.env.TEMPORAL_ADDRESS || 'localhost:7233'
+        });
+    }
+
+    if (!globalForTemporal.temporalClient) {
+        globalForTemporal.temporalClient = new Client({
+            connection: globalForTemporal.temporalConnection,
+            namespace: process.env.TEMPORAL_NAMESPACE || 'default'
+        });
+    }
+
+    return globalForTemporal.temporalClient;
+}
 
 export async function startOptimizationWorkflow(targetUrl: string) {
     try {
-        // 1. gRPC 기반 Temporal 서버와의 커넥션 확립
-        const connection = await Connection.connect({
-            address: process.env.TEMPORAL_ADDRESS || 'localhost:7233'
-        });
-
-        // 2. 워크플로우 클라이언트 스핀업 (Idempotency 등 인프라 설정)
-        const client = new Client({
-            connection,
-            namespace: process.env.TEMPORAL_NAMESPACE || 'default'
-        });
-
+        const client = await getTemporalClient();
         const workflowId = `agentic-cro-flywheel-${crypto.randomUUID()}`;
 
-        // 3. 워크플로우 프로그래밍적 기동 (Untyped Start API 활용)
+        // 워크플로우 프로그래밍적 기동 (Untyped Start API 활용)
         const handle = await client.workflow.start('optimizationFlywheelWorkflow', {
             taskQueue: 'agentic-cro-tasks',
             workflowId,
