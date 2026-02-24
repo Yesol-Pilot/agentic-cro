@@ -129,29 +129,52 @@ export async function rollbackSurgicalASTPatch(targetFilePath: string, hypothesi
     const sourceFile = project.addSourceFileAtPath(targetFilePath);
     let hasChanges = false;
 
-    const jsxElements: Array<Node> = [
-        ...sourceFile.getDescendantsOfKind(SyntaxKind.JsxOpeningElement),
-        ...sourceFile.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement)
-    ];
+    // 계속해서 노드 구조가 변형될 수 있으므로 매번 노드 리스트를 재조회하면서 처리
+    let shouldContinue = true;
+    while (shouldContinue) {
+        shouldContinue = false;
+        const jsxElements: Array<Node> = [
+            ...sourceFile.getDescendantsOfKind(SyntaxKind.JsxOpeningElement),
+            ...sourceFile.getDescendantsOfKind(SyntaxKind.JsxSelfClosingElement)
+        ];
 
-    for (const item of jsxElements) {
-        const jsxElement = item as any;
-        const dataAgentAttr = jsxElement.getAttribute('data-cro-agent');
+        for (const item of jsxElements) {
+            const jsxElement = item as any;
 
-        if (dataAgentAttr) {
-            const attrValueNode = dataAgentAttr.getInitializer();
-            if (attrValueNode && Node.isStringLiteral(attrValueNode) && attrValueNode.getLiteralText() === hypothesisId) {
-                // 이 노드에 대한 롤백 처리를 진행함
-                console.log(`[AST Modifier] 🔙 롤백 타겟 발견: data-cro-agent="${hypothesisId}"`);
+            // 삭제된(파괴된) 노드인지 확인하여 에러 방어
+            if (jsxElement.wasForgotten()) continue;
 
-                // 1. data-cro-agent 속성 완전 제거
-                dataAgentAttr.remove();
+            const proxyNode = Node.isJsxSelfClosingElement(jsxElement) ? jsxElement : jsxElement.getParent();
+            if (!proxyNode || proxyNode.wasForgotten()) continue;
 
-                // 2. className 속성 복원은 원래 백업 스냅샷 기반으로 해야 완벽하지만,
-                // 여기서는 AST 노드 단위로 식별된 마커를 지웠다는 가설 제거 처리로 마무리합니다.
-                // (완벽한 Reversibility를 위해선 덮어쓴 원본 값이나 Remove 액션의 역방향 오퍼레이션을 실행)
-                console.log(`[AST Modifier] 🔙 수술적 적출 완료.`);
-                hasChanges = true;
+            const dataAgentAttr = jsxElement.getAttribute('data-cro-agent');
+            if (dataAgentAttr) {
+                const attrValueNode = dataAgentAttr.getInitializer();
+                if (attrValueNode && Node.isStringLiteral(attrValueNode) && attrValueNode.getLiteralText() === hypothesisId) {
+                    hasChanges = true;
+                    console.log(`[AST Modifier] 🔙 롤백 타겟 발견: data-cro-agent="${hypothesisId}"`);
+
+                    const tagName = jsxElement.getTagNameNode().getText();
+                    const styleAttr = jsxElement.getAttribute('style');
+
+                    // 1. Semantic Wrapper (Fragment/Custom 등) Unwrapping 해체
+                    if (tagName === 'span' && styleAttr && styleAttr.getText().includes('display: \'contents\'')) {
+                        console.log(`[AST Modifier] ♻️ Semantic Wrapper 해체(Unwrapping) 처리 중...`);
+                        // 부모 노드(JsxElement)의 자식들을 가져와서 텍스트 결합 후 부모 자체를 텍스트 교체
+                        if (Node.isJsxElement(proxyNode)) {
+                            const childrenText = proxyNode.getJsxChildren().map(c => c.getText()).join('\n').trim();
+                            proxyNode.replaceWithText(childrenText);
+                            shouldContinue = true; // 트리가 변경되었으므로 다시 탐색
+                            break;
+                        }
+                    } else {
+                        // 2. 일반 노드: 속성(data-cro-agent) 제거
+                        dataAgentAttr.remove();
+                        // (완벽한 Reversibility를 위한 className Restore는 별도 Snapshot 시스템 필요. 
+                        // 본 버전에선 마커 제거로 GC(Garbage Collection) 가시성 선행 확보)
+                        console.log(`[AST Modifier] 🔙 수술적 마커 적출 완료.`);
+                    }
+                }
             }
         }
     }

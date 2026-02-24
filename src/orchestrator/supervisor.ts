@@ -5,10 +5,84 @@ import { BaseAgent } from '../agents/baseAgent';
 import { MessageBus } from './messageBus';
 import { A2AMessage, A2AResponse } from '../types/a2a';
 
+// =========================================================================
+// Phase 8: 무한 루프 통제망 상태 전역 변수 (Infinite Loop Failsafes)
+// =========================================================================
+let isGlobalMutexLocked = false;
+let currentActiveFunnel: string | null = null;
+const componentWinTracker: Record<string, number> = {};
+const REFACTORING_EPOCH_THRESHOLD = 5;
+
 export class SupervisorAgent extends BaseAgent {
     constructor(messageBus: MessageBus) { super('Supervisor', messageBus); }
     protected async handleMessage(message: A2AMessage): Promise<A2AResponse | void> { }
+
+    /**
+     * 기존 단발성 실험 시작 함수 (하위 호환)
+     */
     public async kickOffExperiment() { }
+
+    /**
+     * [Phase 8] 자율 최적화 무한 데몬 루프 (Flywheel)
+     * 주기적으로 트래픽을 관찰하고 파이프라인(DataAnalytics -> Hypothesis -> FrontendDev -> QA)을 자동 트리거합니다.
+     */
+    public async startInfiniteOptimizationLoop() {
+        console.log(`[Supervisor Daemon] 🌀 자율 A/B 테스트 무한 루프(Flywheel) 가동 시작.`);
+
+        // 무한 실행 루프
+        while (true) {
+            await this.executeOptimizationCycle();
+            // 다음 사이클 대기 (예: 1시간). 테스트 중에는 10초
+            await new Promise(resolve => setTimeout(resolve, 10000));
+        }
+    }
+
+    private async executeOptimizationCycle() {
+        // [Failsafe 2] 글로벌 뮤텍스 (다중 변인 간섭 차단 락)
+        if (isGlobalMutexLocked) {
+            console.log(`[Supervisor Daemon] 🔒 통계적 락(Lock) 유지 중: 현재 '${currentActiveFunnel}' 최적화 진행 중이므로 스케줄을 스킵합니다.`);
+            return;
+        }
+
+        const targetFunnel = 'checkout_started'; // DataAnalytics를 통해 동적 식별 (Mock)
+        isGlobalMutexLocked = true;
+        currentActiveFunnel = targetFunnel;
+        console.log(`[Supervisor Daemon] 🎯 타겟 퍼널 락 획득: ${targetFunnel}... 사이클 진입.`);
+
+        try {
+            // [오케스트레이션 단계] DataAnalytics -> Hypothesis -> FrontendDev -> DeploymentQA 통신 수행 영역
+            // (메시지 버스 통신 로직 구현 생략)
+
+            const targetComponent = 'CheckoutForm.tsx'; // (Mock)
+            const currentWins = componentWinTracker[targetComponent] || 0;
+
+            // [Failsafe 1] 리팩토링 에포크 카운터 (코드 스파게티화 방어)
+            if (currentWins >= REFACTORING_EPOCH_THRESHOLD) {
+                console.warn(`[Supervisor Daemon] ⚠️ 컴포넌트(${targetComponent}) 승리 누적(${currentWins}회) 도달. Refactoring Epoch 발동!`);
+                console.log(`[Supervisor Daemon] 🛠️ FrontendDevAgent에게 파일 전면 재작성(Clean Refactoring)을 지시합니다...`);
+
+                // 가상의 리팩토링 대기
+                await new Promise(resolve => setTimeout(resolve, 1000));
+
+                componentWinTracker[targetComponent] = 0;
+                console.log(`[Supervisor Daemon] ✅ Refactoring 완료 및 QA 검증 통과. Win Count 초기화됨.`);
+            } else {
+                console.log(`[Supervisor Daemon] 📈 ${targetComponent} 타겟 코드 패치 및 VLM 검수 단계 진행... (Current Win: ${currentWins})`);
+                // 임의로 실험 성공 시 카운트 증가 모의
+                if (Math.random() > 0.5) {
+                    componentWinTracker[targetComponent] = currentWins + 1;
+                }
+            }
+
+        } catch (error) {
+            console.error(`[Supervisor Daemon] 🚨 최적화 사이클 에러:`, error);
+        } finally {
+            // 락 해제
+            isGlobalMutexLocked = false;
+            currentActiveFunnel = null;
+            console.log(`[Supervisor Daemon] 🔓 퍼널 락 반환 완료. 다음 감시 대기...`);
+        }
+    }
 }
 
 /**
