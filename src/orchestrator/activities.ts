@@ -75,9 +75,24 @@ export async function runBrowserlessQAActivity(components: string[]): Promise<bo
 
 export async function sendHITLReportActivity(patchResult: any): Promise<void> {
     return runWithTraceContext('sendHITLReportActivity', async (traceId) => {
-        console.log(`[Activity/Slack] 📩 모의 실행 보고서 발송: 관리자(CTO)에게 승인(HITL)을 요청합니다.`);
-        console.log(`[Activity/Slack] 📩 TraceID를 통해 이 가설의 모든 사유 과정(CoT) 로그에 접근할 수 있습니다: ${traceId}`);
-        await new Promise(resolve => setTimeout(resolve, 200));
+        console.log(`[Activity/Slack] 📩 관리자(CTO)에게 승인(HITL)을 요청합니다.`);
+
+        try {
+            const slack = (await import('../mcp-servers/slack')).getSlackClient();
+            await slack.connect();
+
+            const message = `🚨 *Agentic CRO: HITL (Human-in-the-loop) Approval Required*\n` +
+                `새로운 A/B 테스트 가설이 제안되었습니다.\n\n` +
+                `• *가설 ID*: \`${patchResult?.hypothesisId || 'Unknown'}\`\n` +
+                `• *Trace ID*: \`${traceId}\`\n` +
+                `• *변형 대상*: ${patchResult?.components?.join(', ') || 'N/A'}\n\n` +
+                `> CTO님, 승인하시려면 대시보드에서 Approve 버튼을 눌러주십시오.`;
+
+            await slack.sendAlert(message);
+            console.log(`[Activity/Slack] 📩 TraceID( ${traceId} ) 및 승인 내용 발송 완수됨.`);
+        } catch (e: any) {
+            console.error(`[Activity/Slack] ❌ 슬랙 알림 발송 중 에러 발생: ${e.message}`);
+        }
     });
 }
 

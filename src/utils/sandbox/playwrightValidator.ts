@@ -4,9 +4,14 @@ import { ClaimCheckStorage } from '../storage/claimCheck';
 
 export async function validateHydrationAndRuntime(url: string = 'http://localhost:3000/checkout') {
 
-    // 🛡️ [Phase 9] Vercel Serverless 용량 극복 (Browserless.io 원격 브라우저 연결)
-    const browserlessUrl = process.env.BROWSERLESS_URL || 'ws://localhost:3000'; // Default to mock local
-    const browser = await chromium.connect({ wsEndpoint: browserlessUrl });
+    // 🛡️ [Phase 12] Browserless.io 원격 브라우저 접속 (Vercel/Temporal 클라우드 호스팅 대비)
+    const browserlessToken = process.env.BROWSERLESS_TOKEN;
+    const wsEndpoint = browserlessToken
+        ? `wss://chrome.browserless.io?token=${browserlessToken}`
+        : (process.env.BROWSERLESS_URL || 'ws://localhost:3000');
+
+    console.log(`[Playwright QA] 🌐 원격 브라우저(CDP) 접속 터널링 시작: ${browserlessToken ? 'Browserless.io Cloud' : wsEndpoint}`);
+    const browser = await chromium.connect({ wsEndpoint });
 
     // 🛡️ 1. 대조군(Control) 컨텍스트
     const controlContext = await browser.newContext({

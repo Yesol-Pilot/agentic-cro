@@ -7,11 +7,9 @@ async function runSimulations() {
 
     // 2. Temporal Activity 환경 Mocking (Execution ID, Run ID 등 주입)
     const env = new MockActivityEnvironment({
-        info: {
-            workflowExecution: { workflowId: 'wf-shadow-1234', runId: 'run-abcd-5678' },
-            activityId: 'act-uuid-9999',
-            activityType: 'triggerDeploymentActivity'
-        } as any
+        workflowExecution: { workflowId: 'wf-shadow-1234', runId: 'run-abcd-5678' },
+        activityId: 'act-uuid-9999',
+        activityType: 'triggerDeploymentActivity'
     });
 
     console.log("=========================================================");

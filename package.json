@@ -24,13 +24,17 @@
   "devDependencies": {
     "@playwright/test": "^1.58.2",
     "@temporalio/testing": "^1.15.0",
+    "@types/jest": "^30.0.0",
     "@types/node": "^25.3.0",
+    "jest": "^30.2.0",
     "playwright": "^1.58.2",
+    "ts-jest": "^29.4.6",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
   "dependencies": {
     "@google/genai": "^1.42.0",
+    "@octokit/rest": "^22.0.1",
     "@opentelemetry/api": "^1.9.0",
     "@temporalio/activity": "^1.15.0",
     "@temporalio/client": "^1.15.0",

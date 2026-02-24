@@ -13,22 +13,75 @@ let currentActiveFunnel: string | null = null;
 const componentWinTracker: Record<string, number> = {};
 const REFACTORING_EPOCH_THRESHOLD = 5;
 
+import { Connection, Client } from '@temporalio/client';
+import * as crypto from 'crypto';
+
 export class SupervisorAgent extends BaseAgent {
+    private temporalClient: Client | null = null;
+
     constructor(messageBus: MessageBus) { super('Supervisor', messageBus); }
-    protected async handleMessage(message: A2AMessage): Promise<A2AResponse | void> { }
 
     /**
-     * 기존 단발성 실험 시작 함수 (하위 호환)
+     * Temporal Client 지연 초기화 (Lazy Init)
      */
-    public async kickOffExperiment() { }
+    private async initTemporalClient() {
+        if (!this.temporalClient) {
+            try {
+                // 클라우드 접속 시 Address 및 TLS 인증서 등 추가 가능
+                const connection = await Connection.connect({ address: 'localhost:7233' });
+                this.temporalClient = new Client({ connection });
+                console.log(`[Supervisor] 🌐 Temporal Server (localhost:7233) 연결 성공.`);
+            } catch (err: any) {
+                console.warn(`[Supervisor] ⚠️ Temporal Server 연결 실패(Worker 구동 전일 수 있음): ${err.message}`);
+                // Mock 또는 Fallback 처리로 넘어갈 수 있도록 처리
+            }
+        }
+    }
+
+    protected async handleMessage(message: A2AMessage): Promise<A2AResponse | void> {
+        console.log(`[Supervisor] 📥 A2A 메시지 수신 [${message.method}] from ${message.sender}`);
+        await this.initTemporalClient();
+
+        // 기존 인메모리 A2A 로직을 Temporal Workflow/Signal 연동으로 격상
+        if (message.method === 'START_ANALYSIS') {
+            await this.kickOffExperiment();
+        } else if (message.method === 'REPORT_VERIFICATION_DONE') {
+            console.log(`[Supervisor] ✅ 실험 검증 사이클 완료 보고 (Payload: ${JSON.stringify(message.params)})`);
+        }
+    }
 
     /**
-     * [Phase 9] Temporal.io Worker 실행 (이전의 인메모리 루프 대체)
-     * 실제로는 별도의 Worker 프로세스에서 Temporal Client를 통해 Workflow를 구동합니다.
+     * 핵심 진입점: 기존 인메모리 함수에서 Temporal Workflow 발동 로직으로 완전 구현
+     */
+    public async kickOffExperiment() {
+        console.log(`[Supervisor] 🚀 kickOffExperiment() 호출됨. 최상위 Temporal Flywheel 작동을 시도합니다.`);
+        await this.initTemporalClient();
+
+        if (!this.temporalClient) {
+            console.error(`[Supervisor] ❌ Temporal Client가 준비되지 않아 Workflow를 시작할 수 없습니다.`);
+            return;
+        }
+
+        const workflowId = `agentic-cro-flywheel-${crypto.randomUUID()}`;
+
+        try {
+            const handle = await this.temporalClient.workflow.start(optimizationFlywheelWorkflow, {
+                taskQueue: 'agentic-cro-tasks',
+                workflowId: workflowId,
+                args: [{ wins: 0 }]
+            });
+            console.log(`[Supervisor] 🎯 Temporal Workflow [${handle.workflowId}] 가동 시작 완료!`);
+        } catch (err) {
+            console.error(`[Supervisor] 🚨 Temporal Workflow 가동 실패:`, err);
+        }
+    }
+
+    /**
+     * [Phase 9] 무한 최적화 루프 실행
      */
     public async startInfiniteOptimizationLoop() {
-        console.log(`[Supervisor Daemon] 🌀 (Deprecated) 인메모리 루프 대신 Temporal Worker가 Workflow를 실행합니다.`);
-        // await temporalClient.workflow.start(optimizationFlywheelWorkflow, { ... });
+        console.log(`[Supervisor Daemon] 🌀 (Deprecated) 인메모리 무한루프 대신 Temporal Client를 통해 Workflow를 백그라운드 구동합니다.`);
+        await this.kickOffExperiment();
     }
 }
 

@@ -26,33 +26,68 @@ export class PostHogMCPConnector {
     }
 
     /**
-     * 퍼널 이탈률 보고서를 생성하거나 Fetch 합니다.
+     * 퍼널 이탈률 보고서를 실제 PostHog Management API로부터 Fetch 합니다.
      * @param funnelId 
      */
     public async fetchFunnelDropoff(funnelId: string): Promise<{ step: string, dropOffRate: number, description: string }> {
-        // 실제 API 구현부 (Mock)
-        if (this.apiKey !== 'dummy_key' && this.apiKey !== '') {
-            try {
-                // 실제 연동 시 주석 해제하여 사용하도록 형태를 갖춤
-                /*
-                const res = await fetch(`${this.host}/api/projects/${this.projectId}/insights/funnel/${funnelId}`, {
-                    headers: { 'Authorization': `Bearer ${this.apiKey}` }
-                });
-                const data = await res.json();
-                */
-                console.log(`📡 [PostHog API] Real 통신 시뮬레이션: ${this.host} 으로부터 Funnel(${funnelId}) Fetching...`);
-            } catch (e) {
-                console.error("PostHog Fetch Error:", e);
-            }
+        if (!this.apiKey || !this.projectId || this.apiKey === 'dummy_key') {
+            console.warn(`[PostHog] ⚠️ 유효한 API Key가 없습니다. Fallback Mock 데이터를 반환합니다.`);
+            return {
+                step: funnelId,
+                dropOffRate: 23.5,
+                description: "Mock: Step 2 단계에서 23.5%의 사용자가 이탈합니다."
+            };
         }
 
-        // 본 프로젝트의 프레임워크 릴레이 증명을 위해 Dummy/Fallback 지연 데이터 사용
-        await new Promise(resolve => setTimeout(resolve, 800));
+        try {
+            console.log(`📡 [PostHog API] Real 통신: ${this.host} 으로부터 Funnel(${funnelId}) Fetching...`);
 
-        return {
-            step: funnelId,
-            dropOffRate: 23.5,
-            description: "Step 2 (결제 정보 입력) 단계에서 [다음 결제하기] 버튼 직전에 23.5%의 사용자가 세션을 종료합니다."
-        };
+            // 실제 PostHog Management API를 통해 특정 Insight(퍼널) 데이터를 가져옵니다.
+            const res = await fetch(`${this.host}/api/projects/${this.projectId}/insights/${funnelId}`, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${this.apiKey}`,
+                    'Content-Type': 'application/json'
+                }
+            });
+
+            if (!res.ok) {
+                throw new Error(`PostHog API 응답 에러: ${res.status} ${res.statusText}`);
+            }
+
+            const data = await res.json();
+
+            // PostHog 퍼널 응답 구조체에서 이탈률 및 정보를 파싱 (응답 스펙에 맞게 조정 필요)
+            // ex) data.result 배열 안의 스텝간 conversion rate 등을 계산
+            // 여기서는 실제 응답 포맷이라 가정하고 안전하게 추출
+            const resultList = data.result || [];
+
+            if (resultList.length < 2) {
+                throw new Error("분석할 퍼널 단계가 2개 이상 구축되지 않았습니다.");
+            }
+
+            // 첫 단계 유입 대비 마지막 단계 전환율을 기반으로 이탈률 산출
+            const initialCount = resultList[0].count;
+            const dropoffStepCount = resultList[resultList.length - 1].count;
+
+            if (initialCount === 0) throw new Error("분석할 트래픽 데이터가 없습니다.");
+
+            const conversionRate = (dropoffStepCount / initialCount) * 100;
+            const dropOffRate = Number((100 - conversionRate).toFixed(2));
+
+            return {
+                step: funnelId,
+                dropOffRate: dropOffRate,
+                description: `실제 데이터 기반: 첫 퍼널 진입자 ${initialCount}명 중 ${dropoffStepCount}명만 도달하여 최종 이탈률은 ${dropOffRate}% 입니다.`
+            };
+        } catch (e: any) {
+            console.error("❌ PostHog Fetch Error:", e.message);
+            // 에러 발생 시 시스템 붕괴를 막기 위한 Fallback
+            return {
+                step: funnelId,
+                dropOffRate: 20.0,
+                description: `Fallback: 실제 통신 실패(${e.message})로 인한 안전 모드 20.0% 할당`
+            };
+        }
     }
 }
