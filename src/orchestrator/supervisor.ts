@@ -65,10 +65,10 @@ export class SupervisorAgent extends BaseAgent {
         const workflowId = `agentic-cro-flywheel-${crypto.randomUUID()}`;
 
         try {
-            const handle = await this.temporalClient.workflow.start(optimizationFlywheelWorkflow, {
+            const handle = await this.temporalClient.workflow.start('optimizationFlywheelWorkflow', {
                 taskQueue: 'agentic-cro-tasks',
                 workflowId: workflowId,
-                args: [{ wins: 0 }]
+                args: [{ wins: 0, targetUrl: 'http://localhost:3001/components/CheckoutButton.tsx' }]
             });
             console.log(`[Supervisor] 🎯 Temporal Workflow [${handle.workflowId}] 가동 시작 완료!`);
         } catch (err) {
@@ -85,115 +85,7 @@ export class SupervisorAgent extends BaseAgent {
     }
 }
 
-// =========================================================================
-// Phase 9: Temporal.io Durable Execution & Idempotent Retry Policy
-// =========================================================================
-import { proxyActivities, sleep, continueAsNew, ApplicationFailure, defineSignal, setHandler, condition } from '@temporalio/workflow';
 
-// HITL 승인 시그널 정의
-export const approveDeploymentSignal = defineSignal('approveDeployment');
-
-// 🚨 비결정적 외부 호출(AI, Browserless)은 반드시 Activity로 분리하여 멱등성 보장
-const {
-    analyzeTrafficActivity,
-    runAICodeGenerationActivity,
-    runBrowserlessQAActivity,
-    triggerDeploymentActivity,
-    sendHITLReportActivity // Slack 보고용 신규 Activity
-} = proxyActivities<any>({
-    startToCloseTimeout: '10m', // Vercel 서버리스 5분 제한 우회
-    retry: {
-        initialInterval: '2s',
-        backoffCoefficient: 2.0,
-        maximumInterval: '1m',
-        maximumAttempts: 10,
-        // 🚨 [Phase 9] 과금 폭탄 및 무한루프 방지를 위한 Non-Retryable 예외 처리
-        nonRetryableErrorTypes: [
-            'LLM_CONTEXT_LIMIT_EXCEEDED', // 프롬프트 토큰 초과 (돈 낭비 방지)
-            'UNAUTHORIZED_API_KEY',       // 인증 실패
-            'FATAL_AST_SYNTAX_ERROR'      // 구문 파괴 에러 (재시도해도 실패 확정)
-        ]
-    }
-});
-
-/**
- * [Phase 9/10] 에이전트 자율 최적화 무한 루프 워크플로우 (Flywheel)
- * Temporal 엔진 위에서 구동되어 인프라 크래시 후에도 중단된 지점부터 완벽히 재개됨.
- */
-export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0 }): Promise<void> {
-    console.log(`[Temporal Workflow] 🌀 자율 A/B 테스트 사이클 시작 (Wins: ${iterationContext.wins})`);
-
-    // Signal 핸들러 설정
-    let isApproved = false;
-    setHandler(approveDeploymentSignal, () => {
-        isApproved = true;
-    });
-
-    // [Failsafe 2] 글로벌 뮤텍스 확인 (Temporal Signal/Query 또는 외부 락 매커니즘 활용)
-    if (isGlobalMutexLocked) {
-        await sleep('1m'); // 1분 대기 후 재시도
-        await continueAsNew(iterationContext); // 🚨 Event History 비대화 폭발 방지
-        return;
-    }
-
-    isGlobalMutexLocked = true;
-
-    try {
-        // 1. 트래픽 분석 (DataAnalytics Activity)
-        const targetFunnel = await analyzeTrafficActivity();
-
-        // [Failsafe 1] 리팩토링 에포크 카운터 점검
-        if (iterationContext.wins >= REFACTORING_EPOCH_THRESHOLD) {
-            console.warn(`[Temporal Workflow] ⚠️ 컴포넌트 승리 누적 도달. Refactoring Epoch 발동!`);
-            iterationContext.wins = 0; // 초기화
-        } else {
-            // 2. 가설 기반 코드 생성 (FrontendDev Activity)
-            const patchResult = await runAICodeGenerationActivity(targetFunnel);
-
-            // 3. Browserless Visual QA 검증 (QA Activity)
-            const qaPassed = await runBrowserlessQAActivity(patchResult.components);
-
-            if (qaPassed) {
-                // [Phase 10] Shadow Mode HITL Bridge (모의 실행 보고서 발송)
-                await sendHITLReportActivity(patchResult);
-
-                console.log(`[Temporal Workflow] ⏳ 운영자 승인(HITL)을 대기합니다... (최대 24시간)`);
-                // 24시간 타임아웃을 건 condition 대기 (데드락 방지 레이스)
-                const isSignaled = await condition(() => isApproved, '24h');
-
-                if (!isSignaled) {
-                    // 24시간 경과 타임아웃: 롤백 및 기각
-                    console.warn(`[Temporal Workflow] ⏰ 24시간 타임아웃 만료. 가설이 기각(Discard) 처리됩니다.`);
-                    throw ApplicationFailure.create({
-                        message: 'HITL Approval Timeout exceeded',
-                        type: 'HITL_TIMEOUT',
-                        nonRetryable: true
-                    });
-                }
-
-                console.log(`[Temporal Workflow] ✅ 관리자 승인(Approve) 수신. 프로덕션 시스템 로직을 반영합니다.`);
-                await triggerDeploymentActivity(patchResult);
-                iterationContext.wins += 1;
-            }
-        }
-    } catch (err: any) {
-        if (err.type === 'LLM_CONTEXT_LIMIT_EXCEEDED') {
-            console.error(`[Temporal Workflow] 🚨 LLM 토큰 초과 치명적 예외 감지. 인간 개입(HITL) 요청.`);
-        } else if (err.type === 'HITL_TIMEOUT') {
-            console.error(`[Temporal Workflow] ❌ HITL 타임아웃 기각 처리됨.`);
-        } else {
-            console.error(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err.message}`);
-        }
-    } finally {
-        isGlobalMutexLocked = false;
-
-        // 다음 사이클 대기
-        await sleep('10s');
-
-        // 🚨 [Phase 9] Event History 비대화(Bloat) 차단을 위한 Continue-As-New 패턴
-        await continueAsNew(iterationContext);
-    }
-}
 
 /**
  * Supervisor 오케스트레이터 모듈

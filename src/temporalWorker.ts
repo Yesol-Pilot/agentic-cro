@@ -16,17 +16,18 @@ async function run() {
     // 환경 변수 기반 Temporal 서버 설정 (클라우드 환경 대응)
     const temporalAddress = process.env.TEMPORAL_ADDRESS || 'localhost:7233';
 
-    // 네임스페이스 및 Task Queue 정의
+    // 네임스페이스 및 Multi-Tenant Task Queue 정의
     const namespace = process.env.TEMPORAL_NAMESPACE || 'default';
-    const taskQueue = 'agentic-cro-tasks';
+    const tenantId = process.env.TENANT_ID || 'default-tenant';
+    const taskQueue = `agentic-cro-tasks-${tenantId}`;
 
     console.log(`[Worker] 접속 대상 Temporal Server: ${temporalAddress}`);
-    console.log(`[Worker] 대상 Namespace: ${namespace} | TaskQueue: ${taskQueue}`);
+    console.log(`[Worker] 대상 Namespace: ${namespace} | Tenant ID: ${tenantId} | TaskQueue: ${taskQueue}`);
 
     try {
         // 워커 인스턴스 생성 및 액티비티 바인딩
         const worker = await Worker.create({
-            workflowsPath: require.resolve('./orchestrator/supervisor'), // optimizationFlywheelWorkflow가 선언된 파일
+            workflowsPath: require.resolve('./orchestrator/workflows'), // optimizationFlywheelWorkflow가 선언된 파일
             activities,
             taskQueue: taskQueue,
         });

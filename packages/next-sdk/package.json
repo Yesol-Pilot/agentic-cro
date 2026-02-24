@@ -18,8 +18,11 @@
     }
   },
   "scripts": {
-    "build": "tsup src/index.ts src/server.ts --format cjs,esm --dts",
-    "dev": "tsup src/index.ts src/server.ts --format cjs,esm --dts --watch"
+    "build": "tsup src/index.ts src/server.ts src/cli.ts --format cjs,esm --dts",
+    "dev": "tsup src/index.ts src/server.ts src/cli.ts --format cjs,esm --dts --watch"
+  },
+  "bin": {
+    "agentic-cro": "./dist/cli.js"
   },
   "dependencies": {
     "@growthbook/growthbook-react": "^0.22.0",

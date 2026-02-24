@@ -1,6 +1,7 @@
 import { Context } from '@temporalio/activity';
 import { getGitHubClient } from '../mcp-servers/github';
 import { getGrowthBookClient } from '../mcp-servers/growthbook';
+import { deductTenantCredit } from '../utils/tokenMetering';
 import { context, trace } from '@opentelemetry/api';
 
 // OpenTelemetry 기본 Tracer 설정 (Langfuse, Datadog 등으로 파이프라인 연결됨)
@@ -46,9 +47,20 @@ function runWithTraceContext<T>(activityName: string, fn: (traceId: string, acti
 export async function analyzeTrafficActivity(): Promise<any> {
     return runWithTraceContext('analyzeTrafficActivity', async (traceId) => {
         console.log(`[Activity] PostHog 이탈률 분석을 모의 실행합니다. (TraceID: ${traceId})`);
-        // 실제 데이터 Fetch 모의
         await new Promise(resolve => setTimeout(resolve, 500));
         return { target: 'checkout_button', dropRate: 0.45 };
+    });
+}
+
+export async function checkTenantCreditActivity(tenantId: string): Promise<boolean> {
+    return runWithTraceContext('checkTenantCreditActivity', async (traceId) => {
+        console.log(`[Activity] 테넌트(${tenantId})의 LLM Usage Credit을 검증합니다. (TraceID: ${traceId})`);
+        const isApproved = await deductTenantCredit(tenantId, 1);
+
+        if (!isApproved) {
+            throw new Error(`[Activity] 🚫 테넌트(${tenantId}) 잔여 크레딧 부족으로 인해 워크플로우 진행이 중단됩니다.`);
+        }
+        return true;
     });
 }
 
@@ -114,14 +126,38 @@ export async function triggerDeploymentActivity(patchResult: any): Promise<void>
             idempotencyKey
         );
 
+        console.log(`[Activity] 🚀 1단계: 외부 Github PR 생성이 완료되었습니다.`);
+    });
+}
+
+export async function waitForCiCdStatusActivity(patchResult: any): Promise<boolean> {
+    return runWithTraceContext('waitForCiCdStatusActivity', async (traceId) => {
+        console.log(`[Activity] 고객사 CI/CD 상태 검증을 시작합니다. (TraceID: ${traceId})`);
+        const github = getGitHubClient();
+        await github.connect();
+
+        const branchName = `feature/${patchResult.hypothesisId}`;
+        const isSuccess = await github.waitForCiCdStatus(branchName, 120); // 최대 2시간 대기
+
+        if (!isSuccess) {
+            throw new Error(`[Activity] ❌ CI/CD 빌드가 실패하였거나 타임아웃 되었습니다. (분기: ${branchName})`);
+        }
+
+        console.log(`[Activity] ✅ 고객사 CI/CD 파이프라인 검증 통과 완료!`);
+        return true;
+    });
+}
+
+export async function enableFeatureFlagActivity(patchResult: any): Promise<void> {
+    return runWithTraceContext('enableFeatureFlagActivity', async (traceId, activityId) => {
+        console.log(`[Activity] HITL 승인 완료. 대상 프로덕트의 Feature Flag를 활성화합니다.`);
         const growthbook = getGrowthBookClient();
         await growthbook.connect();
         await growthbook.toggleFeatureFlag(
             `gb-${patchResult.hypothesisId}`,
             50,
-            idempotencyKey
+            `idem-${activityId}`
         );
-
-        console.log(`[Activity] 🚀 모든 외부 사이드 이펙트 처리가 완료되었습니다. (Idempotency Key 매핑 방어됨)`);
+        console.log(`[Activity] 🚀 Feature Flag 활성화 완료.`);
     });
 }
