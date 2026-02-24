@@ -23,65 +23,95 @@ export class SupervisorAgent extends BaseAgent {
     public async kickOffExperiment() { }
 
     /**
-     * [Phase 8] 자율 최적화 무한 데몬 루프 (Flywheel)
-     * 주기적으로 트래픽을 관찰하고 파이프라인(DataAnalytics -> Hypothesis -> FrontendDev -> QA)을 자동 트리거합니다.
+     * [Phase 9] Temporal.io Worker 실행 (이전의 인메모리 루프 대체)
+     * 실제로는 별도의 Worker 프로세스에서 Temporal Client를 통해 Workflow를 구동합니다.
      */
     public async startInfiniteOptimizationLoop() {
-        console.log(`[Supervisor Daemon] 🌀 자율 A/B 테스트 무한 루프(Flywheel) 가동 시작.`);
+        console.log(`[Supervisor Daemon] 🌀 (Deprecated) 인메모리 루프 대신 Temporal Worker가 Workflow를 실행합니다.`);
+        // await temporalClient.workflow.start(optimizationFlywheelWorkflow, { ... });
+    }
+}
 
-        // 무한 실행 루프
-        while (true) {
-            await this.executeOptimizationCycle();
-            // 다음 사이클 대기 (예: 1시간). 테스트 중에는 10초
-            await new Promise(resolve => setTimeout(resolve, 10000));
-        }
+// =========================================================================
+// Phase 9: Temporal.io Durable Execution & Idempotent Retry Policy
+// =========================================================================
+import { proxyActivities, sleep, continueAsNew, ApplicationFailure } from '@temporalio/workflow';
+
+// 🚨 비결정적 외부 호출(AI, Browserless)은 반드시 Activity로 분리하여 멱등성 보장
+const {
+    analyzeTrafficActivity,
+    runAICodeGenerationActivity,
+    runBrowserlessQAActivity,
+    triggerDeploymentActivity
+} = proxyActivities<any>({
+    startToCloseTimeout: '10m', // Vercel 서버리스 5분 제한 우회
+    retry: {
+        initialInterval: '2s',
+        backoffCoefficient: 2.0,
+        maximumInterval: '1m',
+        maximumAttempts: 10,
+        // 🚨 [Phase 9] 과금 폭탄 및 무한루프 방지를 위한 Non-Retryable 예외 처리
+        nonRetryableErrorTypes: [
+            'LLM_CONTEXT_LIMIT_EXCEEDED', // 프롬프트 토큰 초과 (돈 낭비 방지)
+            'UNAUTHORIZED_API_KEY',       // 인증 실패
+            'FATAL_AST_SYNTAX_ERROR'      // 구문 파괴 에러 (재시도해도 실패 확정)
+        ]
+    }
+});
+
+/**
+ * [Phase 9] 에이전트 자율 최적화 무한 루프 워크플로우 (Flywheel)
+ * Temporal 엔진 위에서 구동되어 인프라 크래시 후에도 중단된 지점부터 완벽히 재개됨.
+ */
+export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0 }): Promise<void> {
+    console.log(`[Temporal Workflow] 🌀 자율 A/B 테스트 사이클 시작 (Wins: ${iterationContext.wins})`);
+
+    // [Failsafe 2] 글로벌 뮤텍스 확인 (Temporal Signal/Query 또는 외부 락 매커니즘 활용)
+    if (isGlobalMutexLocked) {
+        await sleep('1m'); // 1분 대기 후 재시도
+        await continueAsNew(iterationContext); // 🚨 Event History 비대화 폭발 방지
+        return;
     }
 
-    private async executeOptimizationCycle() {
-        // [Failsafe 2] 글로벌 뮤텍스 (다중 변인 간섭 차단 락)
-        if (isGlobalMutexLocked) {
-            console.log(`[Supervisor Daemon] 🔒 통계적 락(Lock) 유지 중: 현재 '${currentActiveFunnel}' 최적화 진행 중이므로 스케줄을 스킵합니다.`);
-            return;
-        }
+    isGlobalMutexLocked = true;
 
-        const targetFunnel = 'checkout_started'; // DataAnalytics를 통해 동적 식별 (Mock)
-        isGlobalMutexLocked = true;
-        currentActiveFunnel = targetFunnel;
-        console.log(`[Supervisor Daemon] 🎯 타겟 퍼널 락 획득: ${targetFunnel}... 사이클 진입.`);
+    try {
+        // 1. 트래픽 분석 (DataAnalytics Activity)
+        const targetFunnel = await analyzeTrafficActivity();
 
-        try {
-            // [오케스트레이션 단계] DataAnalytics -> Hypothesis -> FrontendDev -> DeploymentQA 통신 수행 영역
-            // (메시지 버스 통신 로직 구현 생략)
+        // [Failsafe 1] 리팩토링 에포크 카운터 점검
+        if (iterationContext.wins >= REFACTORING_EPOCH_THRESHOLD) {
+            console.warn(`[Temporal Workflow] ⚠️ 컴포넌트 승리 누적 도달. Refactoring Epoch 발동!`);
+            iterationContext.wins = 0; // 초기화
+        } else {
+            // 2. 가설 기반 코드 생성 (FrontendDev Activity)
+            // 비결정적 AI 호출이 실패해도, RetryPolicy에 의해 안전하게 지수 백오프 처리됨
+            const patchResult = await runAICodeGenerationActivity(targetFunnel);
 
-            const targetComponent = 'CheckoutForm.tsx'; // (Mock)
-            const currentWins = componentWinTracker[targetComponent] || 0;
+            // 3. Browserless Visual QA 검증 (QA Activity)
+            const qaPassed = await runBrowserlessQAActivity(patchResult.components);
 
-            // [Failsafe 1] 리팩토링 에포크 카운터 (코드 스파게티화 방어)
-            if (currentWins >= REFACTORING_EPOCH_THRESHOLD) {
-                console.warn(`[Supervisor Daemon] ⚠️ 컴포넌트(${targetComponent}) 승리 누적(${currentWins}회) 도달. Refactoring Epoch 발동!`);
-                console.log(`[Supervisor Daemon] 🛠️ FrontendDevAgent에게 파일 전면 재작성(Clean Refactoring)을 지시합니다...`);
-
-                // 가상의 리팩토링 대기
-                await new Promise(resolve => setTimeout(resolve, 1000));
-
-                componentWinTracker[targetComponent] = 0;
-                console.log(`[Supervisor Daemon] ✅ Refactoring 완료 및 QA 검증 통과. Win Count 초기화됨.`);
-            } else {
-                console.log(`[Supervisor Daemon] 📈 ${targetComponent} 타겟 코드 패치 및 VLM 검수 단계 진행... (Current Win: ${currentWins})`);
-                // 임의로 실험 성공 시 카운트 증가 모의
-                if (Math.random() > 0.5) {
-                    componentWinTracker[targetComponent] = currentWins + 1;
-                }
+            if (qaPassed) {
+                await triggerDeploymentActivity(patchResult);
+                iterationContext.wins += 1;
             }
-
-        } catch (error) {
-            console.error(`[Supervisor Daemon] 🚨 최적화 사이클 에러:`, error);
-        } finally {
-            // 락 해제
-            isGlobalMutexLocked = false;
-            currentActiveFunnel = null;
-            console.log(`[Supervisor Daemon] 🔓 퍼널 락 반환 완료. 다음 감시 대기...`);
         }
+    } catch (err: any) {
+        // 복구 불가 에러(Non-Retryable) 발생 시 Workflow 단위의 Fallback 기동
+        if (err.type === 'LLM_CONTEXT_LIMIT_EXCEEDED') {
+            console.error(`[Temporal Workflow] 🚨 LLM 토큰 초과 치명적 예외 감지. 인간 개입(HITL) 요청.`);
+            // halt 및 알람 전송 로직
+        }
+    } finally {
+        isGlobalMutexLocked = false;
+
+        // 다음 사이클 대기
+        await sleep('10s');
+
+        // 🚨 [Phase 9] Event History 비대화(Bloat) 차단을 위한 Continue-As-New 패턴
+        // While(true) 로 10만번 실행 시 Temporal DB 한계를 초과하므로,
+        // 이전 상태를 들고 새로운 Workflow 인스턴스로 스스로를 교체함.
+        await continueAsNew(iterationContext);
     }
 }
 
