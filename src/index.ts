@@ -21,8 +21,8 @@ if (!parsedEnv.success) {
 const envConfig = parsedEnv.data;
 import { PostHogMCPConnector } from './mcp-servers/posthog';
 import { V0DevMCPConnector } from './mcp-servers/v0';
-import { GitHubMCPConnector } from './mcp-servers/github';
-import { GrowthBookMCPConnector } from './mcp-servers/growthbook';
+import { getGitHubClient } from './mcp-servers/github';
+import { getGrowthBookClient } from './mcp-servers/growthbook';
 
 import { MessageBus } from './orchestrator/messageBus';
 import { SupervisorAgent } from './orchestrator/supervisor';
@@ -41,8 +41,8 @@ async function bootstrap() {
     console.log(`[1/2] MCP 서버(Agent External Tools) 커넥트 중...`);
     const posthog = new PostHogMCPConnector();
     const v0 = new V0DevMCPConnector();
-    const github = new GitHubMCPConnector();
-    const growthbook = new GrowthBookMCPConnector();
+    const github = getGitHubClient();
+    const growthbook = getGrowthBookClient();
 
     await Promise.all([
         posthog.connect(),

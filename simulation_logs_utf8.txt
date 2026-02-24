@@ -1,0 +1,18 @@
+﻿=========================================================
+?렞 [Phase 10] Grand Release 3? ?쒕??덉씠???⑤몢? ?뚯뒪??=========================================================
+
+>> ?쒕??덉씠????ぉ 1 & 2 & 3 ?듯빀 ?뚯뒪??媛??..
+   (1) ?섏〈??二쇱엯(DI) 湲곕컲 Shadow Client ?쒖뼱 ?덉쟾???뺤씤
+   (2) W3C Trace Context (Otel) 湲곕컲 遺꾩궛 ?몃젅?댁떛 ?꾪뙆 ?뺤씤
+   (3) Temporal 怨좎쑀 ActivityId瑜??듯븳 硫깅벑??Idempotency) 蹂??蹂댄샇 ?뺤씤
+
+[Otel Trace] ?뵕 triggerDeploymentActivity ?쒖옉 (TraceID: trace-test-00000000-0000-0000-0000-000000000000)
+[Activity] 諛고룷 ?뱀씤 ?꾨즺. PR ?앹꽦 諛?Feature Flag瑜??쒖꽦?뷀빀?덈떎.
+??[Shadow Mode] GitHub Mock Endpoint Connected.
+[GitHub API - SHADOW] PR ?앹꽦 ?붿껌 ?고쉶??200 OK) - ?쒕ぉ: [Agentic CRO] ?먮룞 諛고룷: sim-hypo-001 (IdempotencyKey: idem-test)
+??[Shadow Mode] GrowthBook Mock Endpoint Connected.
+[GrowthBook API - SHADOW] ?뚮옒洹??낅뜲?댄듃 ?붿껌 ?고쉶??200 OK) - Key: gb-sim-hypo-001 (IdempotencyKey: idem-test)
+[Activity] ?? 紐⑤뱺 ?몃? ?ъ씠???댄럺??泥섎━媛 ?꾨즺?섏뿀?듬땲?? (Idempotency Key 留ㅽ븨 諛⑹뼱??
+[Otel Trace] ?뢾 triggerDeploymentActivity 醫낅즺
+
+??紐⑤뱺 ?쒕??덉씠???쒕굹由ъ삤(DI, Tracer, Idempotency)媛 ?덉쇅 ?놁씠 ?꾨꼍?섍쾶 ?듦낵?섏뿀?듬땲??

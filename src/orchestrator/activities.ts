@@ -1,0 +1,112 @@
+import { Context } from '@temporalio/activity';
+import { getGitHubClient } from '../mcp-servers/github';
+import { getGrowthBookClient } from '../mcp-servers/growthbook';
+import { context, trace } from '@opentelemetry/api';
+
+// OpenTelemetry 기본 Tracer 설정 (Langfuse, Datadog 등으로 파이프라인 연결됨)
+const tracer = trace.getTracer('agentic-cro-activities');
+
+/**
+ * [Phase 10] W3C Trace Context 동기화 헬퍼
+ * Temporal Workflow Execution ID를 Root Trace ID로 승격시켜 분산 시스템 전체(CoT)의 시각화 맥락을 연결합니다.
+ */
+function runWithTraceContext<T>(activityName: string, fn: (traceId: string, activityId: string) => Promise<T>): Promise<T> {
+    const info = Context.current().info;
+    const workflowId = info.workflowExecution.workflowId;
+    const runId = info.workflowExecution.runId;
+    const activityId = info.activityId;
+
+    // Temporal의 고유 ID를 Trace ID 및 Idempotency Key로 활용
+    // (보통 Otel Interceptor를 씌우지만 여기선 명시적 시뮬레이션 로거 주입)
+    const traceId = `trace-${workflowId}-${runId}`;
+
+    return tracer.startActiveSpan(activityName, async (span) => {
+        span.setAttribute('workflow.id', workflowId);
+        span.setAttribute('workflow.runId', runId);
+        span.setAttribute('activity.id', activityId);
+        span.setAttribute('trace.id', traceId);
+
+        console.log(`[Otel Trace] 🔗 ${activityName} 시작 (TraceID: ${traceId})`);
+
+        try {
+            const result = await fn(traceId, activityId);
+            span.setStatus({ code: 1 }); // OK
+            return result;
+        } catch (error: any) {
+            span.recordException(error);
+            span.setStatus({ code: 2, message: error.message }); // Error
+            throw error;
+        } finally {
+            span.end();
+            console.log(`[Otel Trace] 🏁 ${activityName} 종료`);
+        }
+    });
+}
+
+export async function analyzeTrafficActivity(): Promise<any> {
+    return runWithTraceContext('analyzeTrafficActivity', async (traceId) => {
+        console.log(`[Activity] PostHog 이탈률 분석을 모의 실행합니다. (TraceID: ${traceId})`);
+        // 실제 데이터 Fetch 모의
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return { target: 'checkout_button', dropRate: 0.45 };
+    });
+}
+
+export async function runAICodeGenerationActivity(targetFunnel: any): Promise<any> {
+    return runWithTraceContext('runAICodeGenerationActivity', async (traceId) => {
+        console.log(`[Activity] VLM/LLM 가설 추론 및 AST 조작 코드를 생성합니다. (TraceID: ${traceId})`);
+        await new Promise(resolve => setTimeout(resolve, 800));
+        return {
+            hypothesisId: `hyp-${Date.now()}`,
+            components: ['src/components/Checkout.tsx'],
+            operations: [{ action: 'modify', target: 'button', value: 'Complete Purchase' }]
+        };
+    });
+}
+
+export async function runBrowserlessQAActivity(components: string[]): Promise<boolean> {
+    return runWithTraceContext('runBrowserlessQAActivity', async (traceId) => {
+        console.log(`[Activity] Browserless 기반 VLM 교차 검증을 수행합니다. (TraceID: ${traceId})`);
+        // [Chaos Engineering Target] 무거운 작업 시뮬레이션
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        return true;
+    });
+}
+
+export async function sendHITLReportActivity(patchResult: any): Promise<void> {
+    return runWithTraceContext('sendHITLReportActivity', async (traceId) => {
+        console.log(`[Activity/Slack] 📩 모의 실행 보고서 발송: 관리자(CTO)에게 승인(HITL)을 요청합니다.`);
+        console.log(`[Activity/Slack] 📩 TraceID를 통해 이 가설의 모든 사유 과정(CoT) 로그에 접근할 수 있습니다: ${traceId}`);
+        await new Promise(resolve => setTimeout(resolve, 200));
+    });
+}
+
+export async function triggerDeploymentActivity(patchResult: any): Promise<void> {
+    return runWithTraceContext('triggerDeploymentActivity', async (traceId, activityId) => {
+        console.log(`[Activity] 배포 승인 완료. PR 생성 및 Feature Flag를 활성화합니다.`);
+
+        // [Phase 10] 멱등성 키(Idempotency Key) 주입. 
+        // 워커가 API 응답 직전 크래시(kill -9)되어도 재시도 시 동일한 activityId가 주입되므로
+        // 외부 서버(또는 캐시)에서 중복을 식별하고 방어할 수 있습니다.
+        const idempotencyKey = `idem-${activityId}`;
+
+        const github = getGitHubClient();
+        await github.connect();
+        await github.createPullRequest(
+            `[Agentic CRO] 자동 배포: ${patchResult.hypothesisId}`,
+            `feature/${patchResult.hypothesisId}`,
+            patchResult.operations,
+            idempotencyKey
+        );
+
+        const growthbook = getGrowthBookClient();
+        await growthbook.connect();
+        await growthbook.toggleFeatureFlag(
+            `gb-${patchResult.hypothesisId}`,
+            50,
+            idempotencyKey
+        );
+
+        console.log(`[Activity] 🚀 모든 외부 사이드 이펙트 처리가 완료되었습니다. (Idempotency Key 매핑 방어됨)`);
+    });
+}

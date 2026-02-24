@@ -23,6 +23,7 @@
   "homepage": "https://github.com/Yesol-Pilot/agentic-cro#readme",
   "devDependencies": {
     "@playwright/test": "^1.58.2",
+    "@temporalio/testing": "^1.15.0",
     "@types/node": "^25.3.0",
     "playwright": "^1.58.2",
     "ts-node": "^10.9.2",
@@ -30,6 +31,7 @@
   },
   "dependencies": {
     "@google/genai": "^1.42.0",
+    "@opentelemetry/api": "^1.9.0",
     "@temporalio/activity": "^1.15.0",
     "@temporalio/client": "^1.15.0",
     "@temporalio/worker": "^1.15.0",

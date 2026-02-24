@@ -1,10 +1,15 @@
 /**
- * GrowthBook MCP Server Connector
+ * GrowthBook MCP Server Connector (DI-based)
  * 
  * 역할: Strategy Agent가 생성된 UI에 매칭되는 A/B 테스트 Feature Flag를 설정하거나 타겟 규칙을 제어합니다.
  */
 
-export class GrowthBookMCPConnector {
+export interface IGrowthBookClient {
+    connect(): Promise<boolean>;
+    toggleFeatureFlag(flagKey: string, percent: number, idempotencyKey?: string): Promise<boolean>;
+}
+
+export class RealGrowthBookClient implements IGrowthBookClient {
     private apiKey: string;
 
     constructor() {
@@ -20,13 +25,29 @@ export class GrowthBookMCPConnector {
         return true;
     }
 
-    /**
-     * 특정 Feature Flag 규칙을 업데이트합니다.
-     */
-    public async toggleFeatureFlag(flagKey: string, percent: number): Promise<boolean> {
+    public async toggleFeatureFlag(flagKey: string, percent: number, idempotencyKey?: string): Promise<boolean> {
         // 실제 API 연동 시 GrowthBook POST API 호출
+        console.log(`[GrowthBook API - REAL] 플래그 업데이트 시도 - Key: ${flagKey}, Rollout: ${percent}% (IdempotencyKey: ${idempotencyKey})`);
         await new Promise(resolve => setTimeout(resolve, 600));
-        console.log(`[GrowthBook API] 플래그 업데이트 성공 - Key: ${flagKey}, Rollout: ${percent}%`);
+        console.log(`[GrowthBook API - REAL] 플래그 업데이트 성공`);
         return true;
     }
+}
+
+export class ShadowGrowthBookClient implements IGrowthBookClient {
+    public async connect(): Promise<boolean> {
+        console.log("✅ [Shadow Mode] GrowthBook Mock Endpoint Connected.");
+        return true;
+    }
+
+    public async toggleFeatureFlag(flagKey: string, percent: number, idempotencyKey?: string): Promise<boolean> {
+        console.log(`[GrowthBook API - SHADOW] 플래그 업데이트 요청 우회됨(200 OK) - Key: ${flagKey} (IdempotencyKey: ${idempotencyKey})`);
+        return true;
+    }
+}
+
+// DI Factory
+export function getGrowthBookClient(): IGrowthBookClient {
+    const isShadow = process.env.IS_SHADOW_MODE === 'true';
+    return isShadow ? new ShadowGrowthBookClient() : new RealGrowthBookClient();
 }
