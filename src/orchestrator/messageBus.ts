@@ -38,6 +38,17 @@ export class MessageBus {
 
         console.log(`[MessageBus] 📤 [${fullMessage.sender}] -> [${fullMessage.target}] : ${fullMessage.method}`);
 
+        // [Phase 13 SSE Bridge] 분산 환경(Next.js Dashboard)으로 이벤트 실시간 푸시
+        // - 에이전트 간 주고받는 모든 A2A 통신을 대시보드에서 관제할 수 있도록 릴레이
+        // - 대시보드 서버가 다운되어 있어도 백엔드 코어는 영향을 받지 않도록(catch) 논블로킹(Non-blocking) 처리
+        fetch('http://localhost:3000/api/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(fullMessage)
+        }).catch(() => { /* 대시보드 오프라인 상태 무시 */ });
+
+
+
         try {
             const response = await handler(fullMessage);
             return response || null;
