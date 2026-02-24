@@ -1,0 +1,53 @@
+name: Agentic CRO Validation Pipeline
+
+on:
+  pull_request:
+    branches: [ "main" ]
+    # DeploymentQAAgent가 생성하는 ab-test-* 브랜치 패턴 등에 반응
+
+jobs:
+  agent-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Core Dependencies
+        run: npm ci
+
+      - name: 🛡️ Strict Type Check (Syntax & Compiler Boundary)
+        run: npx tsc --noEmit
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: 🚀 Start Target Application (Sandbox Environment)
+        run: |
+          cd test-app
+          npm ci
+          npm run build
+          npm run start &
+          npx wait-on http://localhost:3000
+        env:
+          NEXT_PUBLIC_POSTHOG_KEY: ${{ secrets.NEXT_PUBLIC_POSTHOG_KEY }}
+          NEXT_PUBLIC_POSTHOG_HOST: ${{ secrets.NEXT_PUBLIC_POSTHOG_HOST }}
+
+      - name: 🕵️ Execute State Injection & VLM Visual QA
+        # playwrightValidator가 독립 실행 가능하도록 ts-node를 통해 호출
+        run: npx ts-node src/utils/sandbox/runValidator.ts
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+      - name: 🔄 Evaluate Auto-Merge Condition (Squash)
+        if: success()
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          pull-request-number: ${{ github.event.pull_request.number }}
+          merge-method: squash
