@@ -5,6 +5,11 @@ on:
     branches: [ "main" ]
     # DeploymentQAAgent가 생성하는 ab-test-* 브랜치 패턴 등에 반응
 
+permissions:
+  contents: write
+  pull-requests: write
+  issues: read
+
 jobs:
   agent-validation:
     runs-on: ubuntu-latest
