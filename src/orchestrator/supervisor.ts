@@ -298,7 +298,8 @@ async function sendBatchWithBackoffSaga(payloads: SagaPayload[], retryCount: num
             isGrowthBookUpdated = true;
 
             console.log(`[Saga 트랜잭션] 🚀 [2/2] Vercel Edge Config 업데이트 시도: ${item.featureId}`);
-            const isVercelSuccess = Math.random() > 0.2;
+            // TODO: [Phase 12] Vercel API 연동 전까지 무조건 성공하도록 임시 처리
+            const isVercelSuccess = true;
             if (!isVercelSuccess) throw new Error("Vercel Edge Config 504 Gateway Timeout");
 
             console.log(`[Saga] ✅ 2PC 커밋 완벽 성공 (상태 일치): ${item.featureId}`);
