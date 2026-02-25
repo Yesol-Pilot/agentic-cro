@@ -27,7 +27,7 @@ export class HypothesisStrategyAgent extends BaseAgent {
                     userPrompt,
                     HypothesisSchema,
                     'hypothesis_output',
-                    'gemini-2.5-pro'
+                    'gemini-3.1-pro-preview'
                 );
                 console.log(`[HypothesisStrategy] 🧠 LLM 가설 생성 성공! (AI 추론 모드)`);
             } catch (err: any) {

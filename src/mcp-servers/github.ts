@@ -1,107 +1,130 @@
 /**
- * GitHub MCP Server Connector (DI-based)
+ * GitHub Authentication Gateway
  * 
- * 역할: Deployment Agent가 A/B 테스트 검증에 성공한 코드를 리포지토리에 푸시하고 PR을 생성합니다.
+ * B2B SaaS 엔터프라이즈 보안 체계:
+ * - Production: GitHub App → JWT 서명 → Installation Token (1h 유효)
+ * - Development: PAT Fallback
+ * 
+ * CTO 아키텍처 규격:
+ *   Step A: RS256 JWT 서명 (APP_ID + PRIVATE_KEY, 10분 만료)
+ *   Step B: Installation Token 발급 (POST /app/installations/{id}/access_tokens)
+ *   Step C: Octokit + git clone 인증 주입
  */
 
 import { Octokit } from '@octokit/rest';
-import { exec } from 'child_process';
-import util from 'util';
+import * as jwt from 'jsonwebtoken';
 
-const execPromise = util.promisify(exec);
+// ─── Types ─────────────────────────────────────────
 
-export interface IGitHubClient {
-    connect(): Promise<boolean>;
-    createPullRequest(title: string, branchName: string, changes: any, idempotencyKey?: string): Promise<string>;
+interface GitHubAuth {
+    token: string;
+    provider: 'github-app' | 'pat';
+    expiresAt: string | null;
 }
 
-export class RealGitHubClient implements IGitHubClient {
-    private octokit: Octokit;
-    private repoOwner: string;
-    private repoName: string;
-    private isConnected: boolean = false;
+// ─── Config (환경변수 기반 — 하드코딩 금지) ──────────
 
-    constructor() {
-        const token = process.env.GITHUB_PAT || '';
-        this.octokit = new Octokit({ auth: token });
-        this.repoOwner = process.env.REPO_OWNER || '';
-        this.repoName = process.env.REPO_NAME || '';
+const GITHUB_APP_ID = process.env.GITHUB_APP_ID || '';
+const GITHUB_APP_PRIVATE_KEY = (process.env.GITHUB_APP_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+const GITHUB_APP_INSTALLATION_ID = process.env.GITHUB_APP_INSTALLATION_ID || '';
+
+// ─── Step A: JWT 서명 (RS256, 10분 만료) ───────────
+
+function generateJWT(): string {
+    if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY) {
+        throw new Error('[GitHub App] APP_ID 또는 PRIVATE_KEY 미설정');
     }
 
-    public async connect(): Promise<boolean> {
-        if (!process.env.GITHUB_PAT || !this.repoOwner || !this.repoName) {
-            console.warn("[GitHub] ⚠️ GitHub 자격 증명이 부족합니다. 실제 PR이 생성되지 않습니다.");
-            return false;
-        }
-        try {
-            const { data } = await this.octokit.rest.users.getAuthenticated();
-            console.log(`✅ GitHub MCP Endpoint Connected (Authenticated as ${data.login}).`);
-            this.isConnected = true;
-            return true;
-        } catch (e: any) {
-            console.error(`[GitHub] ❌ 자격 증명 검증 실패: ${e.message}`);
-            return false;
-        }
-    }
+    const now = Math.floor(Date.now() / 1000);
 
-    public async createPullRequest(title: string, branchName: string, changes: any, idempotencyKey?: string): Promise<string> {
-        if (!this.isConnected) {
-            console.warn(`[GitHub API] 연동되지 않아 가짜 PR URL을 반환합니다.`);
-            return `https://github.com/${this.repoOwner}/${this.repoName}/pull/mock`;
-        }
+    const payload = {
+        iat: now - 60,           // issued at (60초 클럭 스큐 허용)
+        exp: now + (10 * 60),    // 10분 만료
+        iss: GITHUB_APP_ID,      // GitHub App ID
+    };
 
-        console.log(`[GitHub API - REAL] 브랜치 [${branchName}] 생성 및 PR(${title}) 시도 (IdempotencyKey: ${idempotencyKey})`);
-
-        try {
-            // 1. 로컬 환경에서 적용된 AST 패치 결과를 새 브랜치에 커밋하고 푸시합니다.
-            // 주의: Temporal Worker 가 구동되는 서버에 git 레포지토리가 설정되어 있어야 함
-            await execPromise(`git checkout -b ${branchName}`);
-            await execPromise(`git add .`);
-            await execPromise(`git commit -m "${title}"`);
-            await execPromise(`git push origin ${branchName} --force`); // 멱등성을 위한 force push
-
-            // 2. 푸시된 브랜치를 기반으로 Octokit PR 생성
-            const diffBody = JSON.stringify(changes, null, 2);
-
-            const response = await this.octokit.rest.pulls.create({
-                owner: this.repoOwner,
-                repo: this.repoName,
-                title: title,
-                head: branchName,
-                base: 'main',
-                body: `## Agentic CRO Auto-Generated PR\n\n**Hypothesis Info:**\n\`\`\`json\n${diffBody}\n\`\`\`\n\n> This PR was created with Idempotency Key: \`${idempotencyKey ?? 'None'}\``,
-            });
-
-            console.log(`[GitHub API - REAL] PR 생성 완료: ${response.data.html_url}`);
-
-            // 작업 완료 후 원래 브랜치로 복귀 (Clean state)
-            await execPromise(`git checkout main`);
-
-            return response.data.html_url;
-        } catch (e: any) {
-            console.error(`[GitHub API] ❌ PR 생성 실패: ${e.message}`);
-            // 복귀 시도
-            try { await execPromise(`git checkout main`); } catch (_) { }
-            throw e;
-        }
-    }
+    return jwt.sign(payload, GITHUB_APP_PRIVATE_KEY, { algorithm: 'RS256' });
 }
 
-export class ShadowGitHubClient implements IGitHubClient {
-    public async connect(): Promise<boolean> {
-        console.log("✅ [Shadow Mode] GitHub Mock Endpoint Connected.");
-        return true;
+// ─── Step B: Installation Token 발급 ──────────────
+
+async function generateInstallationToken(): Promise<GitHubAuth> {
+    const jwtToken = generateJWT();
+
+    const response = await fetch(
+        `https://api.github.com/app/installations/${GITHUB_APP_INSTALLATION_ID}/access_tokens`,
+        {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${jwtToken}`,
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+            },
+        }
+    );
+
+    if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`[GitHub App] Installation Token 발급 실패 (${response.status}): ${body}`);
     }
 
-    public async createPullRequest(title: string, branchName: string, changes: any, idempotencyKey?: string): Promise<string> {
-        console.log(`[GitHub API - SHADOW] PR 생성 요청 우회됨(200 OK) - 제목: ${title} (IdempotencyKey: ${idempotencyKey})`);
-        // 부수 효과 없이 가짜 URL 반환
-        return `https://github.com/shadow-user/shadow-repo/pull/999`;
-    }
+    const data = await response.json() as { token: string; expires_at: string };
+
+    console.log(`✅ [GitHub App] Installation Token 발급 완료 (만료: ${data.expires_at})`);
+
+    return {
+        token: data.token,
+        provider: 'github-app',
+        expiresAt: data.expires_at,
+    };
 }
 
-// DI Factory
-export function getGitHubClient(): IGitHubClient {
-    const isShadow = process.env.IS_SHADOW_MODE === 'true';
-    return isShadow ? new ShadowGitHubClient() : new RealGitHubClient();
+// ─── Factory: 환경별 분기 (CTO 규격) ───────────────
+
+/**
+ * 프로덕션: GitHub App JWT → Installation Token (1h 유효, 최소 권한)
+ * 개발/로컬: PAT Fallback
+ */
+export async function getGitHubAuthToken(): Promise<GitHubAuth> {
+    // Production: GitHub App 인증
+    if (process.env.NODE_ENV === 'production') {
+        if (!GITHUB_APP_ID || !GITHUB_APP_PRIVATE_KEY || !GITHUB_APP_INSTALLATION_ID) {
+            throw new Error(
+                '[GitHub App] 프로덕션 환경에서 GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, GITHUB_APP_INSTALLATION_ID가 필수입니다.'
+            );
+        }
+        return await generateInstallationToken();
+    }
+
+    // Development: PAT Fallback
+    const pat = process.env.GITHUB_PAT;
+    if (!pat) {
+        throw new Error('[GitHub Auth] GITHUB_PAT 미설정 (개발 환경)');
+    }
+
+    console.log('🔑 [GitHub Auth] PAT Fallback 모드 (개발 환경)');
+    return {
+        token: pat,
+        provider: 'pat',
+        expiresAt: null,
+    };
+}
+
+// ─── Step C: 인증된 Octokit 인스턴스 팩토리 ────────
+
+export async function getAuthenticatedOctokit(): Promise<{ octokit: Octokit; auth: GitHubAuth }> {
+    const auth = await getGitHubAuthToken();
+    const octokit = new Octokit({ auth: auth.token });
+    return { octokit, auth };
+}
+
+/**
+ * Step C: git clone URL에 인증 토큰을 주입합니다.
+ * GitHub App: https://x-access-token:{token}@github.com/owner/repo.git
+ * PAT:        https://{token}@github.com/owner/repo.git
+ */
+export function getAuthenticatedCloneUrl(repoFullName: string, auth: GitHubAuth): string {
+    const prefix = auth.provider === 'github-app' ? 'x-access-token' : '';
+    const authPart = prefix ? `${prefix}:${auth.token}` : auth.token;
+    return `https://${authPart}@github.com/${repoFullName}.git`;
 }
