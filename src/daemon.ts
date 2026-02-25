@@ -15,6 +15,7 @@ import { PostHogMCPConnector, SITE_TAXONOMY } from './mcp-servers/posthog';
 import { ConcurrencyLimiter, FleetView, handleASTDiscoveryFailure } from './orchestrator/fleetManager';
 import { BayesianCalculator } from './analytics/bayesian';
 import { getSlackClient } from './mcp-servers/slack';
+import { shadowAuditFireAndForget } from './adapters/whylabShadow';
 
 // ─── Config ───────────────────────────────────────
 
@@ -114,6 +115,22 @@ async function runCycle() {
 
             const maxLoss = parseFloat(process.env.MAX_EXPECTED_LOSS || '0.0015');
             const decision = result.expectedLoss < maxLoss ? 'DEPLOY' : 'HOLD';
+
+            // ═══ WhyLab Shadow Audit (Non-blocking) ═══
+            // Fire-and-forget: 카나리 10% 결정론적 라우팅
+            // 에러 시 파이프라인에 영향 없음
+            shadowAuditFireAndForget({
+                siteId: site,
+                cycleId: cycleId,
+                decision: decision as 'DEPLOY' | 'HOLD',
+                probBBeatsA: result.probBBeatsA,
+                expectedLoss: result.expectedLoss,
+                controlCvr,
+                variantCvr,
+                sampleSize: pv,
+                timestamp: new Date().toISOString(),
+            }, true).catch(() => { }); // 최종 안전망
+            // ═══════════════════════════════════════════
 
             fleetView.updateSite(site, {
                 status: decision === 'DEPLOY' ? 'PR_CREATED' : 'HOLD',

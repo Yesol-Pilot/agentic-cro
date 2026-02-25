@@ -34,6 +34,26 @@ interface ShadowAuditResponse {
 const SHADOW_API_URL = process.env.WHYLAB_SHADOW_API || 'http://localhost:8100/api/v1/shadow/audit';
 /** 타임아웃 (ms) — 메인 파이프라인을 절대 지연시키지 않음 */
 const SHADOW_TIMEOUT_MS = parseInt(process.env.SHADOW_TIMEOUT_MS || '2000', 10);
+/** 카나리 비율 (0~100) */
+const CANARY_PERCENT = parseInt(process.env.SHADOW_CANARY_PERCENT || '10', 10);
+
+// ─── Deterministic Canary Routing ─────────────────
+
+/**
+ * 결정론적 해시 기반 카나리 라우팅.
+ * 
+ * Math.random() 사용 금지 — 동일 cycleId의 모든 단계가
+ * 100% 온전한 트레이스로 수집되어야 DAG가 끊기지 않음.
+ * 
+ * djb2 해시 → mod 100 → canaryPercent 미만이면 감사 대상.
+ */
+export function shouldAudit(cycleId: string, canaryPercent: number = CANARY_PERCENT): boolean {
+    let hash = 5381;
+    for (let i = 0; i < cycleId.length; i++) {
+        hash = ((hash << 5) + hash + cycleId.charCodeAt(i)) & 0x7fffffff;
+    }
+    return (hash % 100) < canaryPercent;
+}
 
 // ─── Non-blocking Shadow Adapter ──────────────────
 
@@ -41,6 +61,7 @@ const SHADOW_TIMEOUT_MS = parseInt(process.env.SHADOW_TIMEOUT_MS || '2000', 10);
  * HIVE MIND Decision을 WhyLab Shadow에 전달 (Fire-and-forget).
  * 
  * 무결성 보장:
+ * - 결정론적 카나리 라우팅 (shouldAudit)
  * - 2초 타임아웃
  * - 모든 에러 무시 (catch 처리)
  * - 원래 파이프라인의 흐름을 절대 방해하지 않음
@@ -49,6 +70,12 @@ export async function shadowAuditFireAndForget(
     payload: ShadowAuditPayload,
     verbose: boolean = false,
 ): Promise<ShadowAuditResponse | null> {
+    // 결정론적 카나리 가드
+    if (!shouldAudit(payload.cycleId)) {
+        if (verbose) console.log(`  [Shadow] ⏭️ Skipped (not in canary: ${payload.cycleId})`);
+        return null;
+    }
+
     try {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), SHADOW_TIMEOUT_MS);
