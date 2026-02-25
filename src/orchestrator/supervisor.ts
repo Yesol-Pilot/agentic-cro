@@ -93,107 +93,56 @@ import { proxyActivities, sleep, continueAsNew, ApplicationFailure, defineSignal
 // HITL 승인 시그널 정의
 export const approveDeploymentSignal = defineSignal('approveDeployment');
 
-// 🚨 비결정적 외부 호출(AI, Browserless)은 반드시 Activity로 분리하여 멱등성 보장
 const {
     analyzeTrafficActivity,
-    runAICodeGenerationActivity,
-    runBrowserlessQAActivity,
-    triggerDeploymentActivity,
-    sendHITLReportActivity // Slack 보고용 신규 Activity
+    generateHypothesisActivity,
+    applyASTAndCreatePRActivity
 } = proxyActivities<any>({
-    startToCloseTimeout: '10m', // Vercel 서버리스 5분 제한 우회
+    startToCloseTimeout: '10m', // Github clone, LLM call, etc.
     retry: {
         initialInterval: '2s',
         backoffCoefficient: 2.0,
         maximumInterval: '1m',
         maximumAttempts: 10,
-        // 🚨 [Phase 9] 과금 폭탄 및 무한루프 방지를 위한 Non-Retryable 예외 처리
         nonRetryableErrorTypes: [
-            'LLM_CONTEXT_LIMIT_EXCEEDED', // 프롬프트 토큰 초과 (돈 낭비 방지)
-            'UNAUTHORIZED_API_KEY',       // 인증 실패
-            'FATAL_AST_SYNTAX_ERROR'      // 구문 파괴 에러 (재시도해도 실패 확정)
+            'LLM_CONTEXT_LIMIT_EXCEEDED',
+            'UNAUTHORIZED_API_KEY',
+            'FATAL_AST_SYNTAX_ERROR'
         ]
     }
 });
 
 /**
- * [Phase 9/10] 에이전트 자율 최적화 무한 루프 워크플로우 (Flywheel)
- * Temporal 엔진 위에서 구동되어 인프라 크래시 후에도 중단된 지점부터 완벽히 재개됨.
+ * [Phase MVP] The Durable Singularity - T-E2E v3 Workflow
  */
 export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0 }): Promise<void> {
     console.log(`[Temporal Workflow] 🌀 자율 A/B 테스트 사이클 시작 (Wins: ${iterationContext.wins})`);
 
-    // Signal 핸들러 설정
-    let isApproved = false;
-    setHandler(approveDeploymentSignal, () => {
-        isApproved = true;
-    });
-
-    // [Failsafe 2] 글로벌 뮤텍스 확인 (Temporal Signal/Query 또는 외부 락 매커니즘 활용)
-    if (isGlobalMutexLocked) {
-        await sleep('1m'); // 1분 대기 후 재시도
-        await continueAsNew(iterationContext); // 🚨 Event History 비대화 폭발 방지
-        return;
-    }
-
-    isGlobalMutexLocked = true;
-
     try {
-        // 1. 트래픽 분석 (DataAnalytics Activity)
-        const targetFunnel = await analyzeTrafficActivity();
+        // Step 1: 트래픽 분석 (DataAnalytics Activity)
+        console.log(`[Workflow] Step 1: analyzeTrafficActivity 호출중...`);
+        const trafficData = await analyzeTrafficActivity();
 
-        // [Failsafe 1] 리팩토링 에포크 카운터 점검
-        if (iterationContext.wins >= REFACTORING_EPOCH_THRESHOLD) {
-            console.warn(`[Temporal Workflow] ⚠️ 컴포넌트 승리 누적 도달. Refactoring Epoch 발동!`);
-            iterationContext.wins = 0; // 초기화
-        } else {
-            // 2. 가설 기반 코드 생성 (FrontendDev Activity)
-            const patchResult = await runAICodeGenerationActivity(targetFunnel);
+        // Step 2: 가설 기반 코드 생성 (FrontendDev Activity)
+        console.log(`[Workflow] Step 2: generateHypothesisActivity 호출중...`);
+        const codePatch = await generateHypothesisActivity(trafficData);
 
-            // 3. Browserless Visual QA 검증 (QA Activity)
-            const qaPassed = await runBrowserlessQAActivity(patchResult.components);
+        // Step 3: AST 수술 및 GitHub PR 생성 (Deployment Activity)
+        console.log(`[Workflow] Step 3: applyASTAndCreatePRActivity 호출중...`);
+        const prUrl = await applyASTAndCreatePRActivity(codePatch);
 
-            if (qaPassed) {
-                // [Phase 10] Shadow Mode HITL Bridge (모의 실행 보고서 발송)
-                await sendHITLReportActivity(patchResult);
+        console.log(`[Temporal Workflow] ✅ 사이클 1회전 완료! PR 개설: ${prUrl}`);
+        iterationContext.wins += 1;
 
-                console.log(`[Temporal Workflow] ⏳ 운영자 승인(HITL)을 대기합니다... (최대 24시간)`);
-                // 24시간 타임아웃을 건 condition 대기 (데드락 방지 레이스)
-                const isSignaled = await condition(() => isApproved, '24h');
-
-                if (!isSignaled) {
-                    // 24시간 경과 타임아웃: 롤백 및 기각
-                    console.warn(`[Temporal Workflow] ⏰ 24시간 타임아웃 만료. 가설이 기각(Discard) 처리됩니다.`);
-                    throw ApplicationFailure.create({
-                        message: 'HITL Approval Timeout exceeded',
-                        type: 'HITL_TIMEOUT',
-                        nonRetryable: true
-                    });
-                }
-
-                console.log(`[Temporal Workflow] ✅ 관리자 승인(Approve) 수신. 프로덕션 시스템 로직을 반영합니다.`);
-                await triggerDeploymentActivity(patchResult);
-                iterationContext.wins += 1;
-            }
-        }
     } catch (err: any) {
-        if (err.type === 'LLM_CONTEXT_LIMIT_EXCEEDED') {
-            console.error(`[Temporal Workflow] 🚨 LLM 토큰 초과 치명적 예외 감지. 인간 개입(HITL) 요청.`);
-        } else if (err.type === 'HITL_TIMEOUT') {
-            console.error(`[Temporal Workflow] ❌ HITL 타임아웃 기각 처리됨.`);
-        } else {
-            console.error(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err.message}`);
-        }
+        console.error(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err.message}`);
+        throw err; // 워크플로우 실패로 기록
     } finally {
         isGlobalMutexLocked = false;
-
-        // 다음 사이클 대기
-        await sleep('10s');
-
-        // 🚨 [Phase 9] Event History 비대화(Bloat) 차단을 위한 Continue-As-New 패턴
-        await continueAsNew(iterationContext);
+        // 연속 실행을 원하지 않으면 continueAsNew는 생략하거나 대기 후 호출
     }
 }
+
 
 /**
  * Supervisor 오케스트레이터 모듈
