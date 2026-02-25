@@ -63,8 +63,26 @@ export async function applySurgicalASTPatch(targetFilePath: string, operations: 
                         const expr = initializer.getExpression();
                         if (!expr) continue;
 
-                        if (Node.isTemplateExpression(expr) || Node.isNoSubstitutionTemplateLiteral(expr)) {
-                            console.warn(`[AST Modifier] TemplateLiteral 감지됨. 덮어쓰기 대신 경고 처리. 변경 생략.`);
+                        if (Node.isTemplateExpression(expr)) {
+                            // Case C: TemplateLiteral — 전체 표현식을 재구성하여 클래스 추가
+                            const newClasses = op.classesToAdd.join(' ');
+                            const originalText = expr.getText();
+                            // 마지막 백틱 앞에 클래스 삽입: `...${foo}` → `...${foo} newClasses`
+                            const injected = originalText.slice(0, -1) + ` ${newClasses}` + originalText.slice(-1);
+                            expr.replaceWithText(injected);
+                            isModified = true;
+                            hasChanges = true;
+                            console.log(`[AST Modifier] ✅ TemplateLiteral 뒤에 클래스 주입: ${newClasses}`);
+                        }
+                        else if (Node.isNoSubstitutionTemplateLiteral(expr)) {
+                            const currentVal = expr.getLiteralText();
+                            let merged = twMerge(currentVal, ...op.classesToAdd);
+                            op.classesToRemove?.forEach(cls => {
+                                merged = merged.replace(new RegExp(`\\b${cls}\\b`, 'g'), '').trim();
+                            });
+                            expr.setLiteralValue(merged);
+                            isModified = true;
+                            hasChanges = true;
                         }
                         else if (Node.isCallExpression(expr)) {
                             const callExpr = expr as CallExpression;
@@ -81,6 +99,16 @@ export async function applySurgicalASTPatch(targetFilePath: string, operations: 
                             callExpr.addArgument(`"${newClassesStr}"`);
                             isModified = true;
                             hasChanges = true;
+                        }
+                        else {
+                            // Case D: Identifier 또는 기타 표현식 — 템플릿 리터럴로 래핑
+                            // className={buttonClass} → className={`${buttonClass} newClasses`}
+                            const newClasses = op.classesToAdd.join(' ');
+                            const originalText = expr.getText();
+                            initializer.replaceWithText(`{\`\${${originalText}} ${newClasses}\`}`);
+                            isModified = true;
+                            hasChanges = true;
+                            console.log(`[AST Modifier] ✅ Identifier/Expression → TemplateLiteral 래핑 + 클래스 주입: ${newClasses}`);
                         }
                     }
 
