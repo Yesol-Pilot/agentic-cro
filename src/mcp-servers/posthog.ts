@@ -70,7 +70,7 @@ export interface SiteFunnelResult {
 // ─── Neo-Genesis 12개 사이트 Taxonomy ──────────────
 
 export const SITE_TAXONOMY: Record<string, string[]> = {
-    'toolpick': ['toolpick.dev', 'www.toolpick.dev'],
+    'toolpick': ['toolpick.dev', 'www.toolpick.dev', 'localhost:4021'],
     'ur-wrong': ['ur-wrong.com', 'www.ur-wrong.com'],
     'aiforge': ['aiforge.neogenesis.app'],
     'sellkit': ['sellkit.neogenesis.app'],
@@ -91,8 +91,8 @@ export class PostHogMCPConnector {
     private projectId: string;
     private host: string;
 
-    /** 최소 통계적 유의성을 위한 표본 크기 (기본: 500건) */
-    public static MINIMUM_SAMPLE_SIZE = 500;
+    /** 최소 통계적 유의성을 위한 표본 크기 (프로덕션: 500건, 개발: DEV_MIN_SAMPLE_SIZE) */
+    public static MINIMUM_SAMPLE_SIZE = parseInt(process.env.DEV_MIN_SAMPLE_SIZE || '500', 10);
 
     constructor() {
         this.apiKey = process.env.POSTHOG_API_KEY || '';
@@ -220,7 +220,8 @@ export class PostHogMCPConnector {
      * Statistical Hallucination 방지를 위한 가드레일입니다.
      */
     public async checkDataReadiness(siteKey: string): Promise<DataReadinessResult> {
-        const minRequired = PostHogMCPConnector.MINIMUM_SAMPLE_SIZE;
+        // 런타임에 환경변수를 읽어 개발 모드 오버라이드 적용
+        const minRequired = parseInt(process.env.DEV_MIN_SAMPLE_SIZE || String(PostHogMCPConnector.MINIMUM_SAMPLE_SIZE), 10);
 
         try {
             const events = await this.fetchEventsBySite(siteKey, minRequired);
