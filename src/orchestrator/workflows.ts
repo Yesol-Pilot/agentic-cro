@@ -12,7 +12,8 @@ const {
     waitForCiCdStatusActivity,
     enableFeatureFlagActivity,
     sendHITLReportActivity,
-    checkTenantCreditActivity
+    checkTenantCreditActivity,
+    reportToNeoGenesisActivity
 } = proxyActivities<any>({
     startToCloseTimeout: '10m',
     retry: {
@@ -82,6 +83,11 @@ export async function optimizationFlywheelWorkflow(iterationContext: any = { win
                 iterationContext.wins += 1;
             }
         }
+
+        // 본사 관제탑 (Neo-Genesis 7700 포트)에 에폭 1사이클 진행 상황 보고
+        console.log(`[Temporal Workflow] 🌉 본사 SBU 브릿지 통신 시도 시뮬레이션...`);
+        await reportToNeoGenesisActivity(currentTenant, iterationContext.wins, iterationContext.wins >= 5);
+
     } catch (err: any) {
         console.log(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err?.message}`);
     } finally {

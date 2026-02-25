@@ -2,6 +2,7 @@ import { Context } from '@temporalio/activity';
 import { getGitHubClient } from '../mcp-servers/github';
 import { getGrowthBookClient } from '../mcp-servers/growthbook';
 import { deductTenantCredit } from '../utils/tokenMetering';
+import { getNeoGenesisClient } from '../mcp-servers/neo-genesis';
 import { context, trace } from '@opentelemetry/api';
 
 // OpenTelemetry 기본 Tracer 설정 (Langfuse, Datadog 등으로 파이프라인 연결됨)
@@ -61,6 +62,23 @@ export async function checkTenantCreditActivity(tenantId: string): Promise<boole
             throw new Error(`[Activity] 🚫 테넌트(${tenantId}) 잔여 크레딧 부족으로 인해 워크플로우 진행이 중단됩니다.`);
         }
         return true;
+    });
+}
+
+export async function reportToNeoGenesisActivity(tenantId: string, currentWins: number, isRefactoringEpoch: boolean): Promise<void> {
+    return runWithTraceContext('reportToNeoGenesisActivity', async (traceId) => {
+        console.log(`[Activity/Bridge] 🌉 원격 본사 시스템(Neo-Genesis)으로 배치 상태를 동기화합니다. (TraceID: ${traceId})`);
+        const client = getNeoGenesisClient();
+        await client.reportStatus({
+            sbuId: 'agentic-cro',
+            tenantId: tenantId,
+            status: 'active',
+            metrics: {
+                wins: currentWins,
+                tokensUsed: 1, // 이번 사이클 소모량
+                message: isRefactoringEpoch ? '리팩토링 에폭 진입' : '통상 최적화 수행 완료'
+            }
+        });
     });
 }
 

@@ -41,6 +41,7 @@
     "@temporalio/client": "^1.15.0",
     "@temporalio/worker": "^1.15.0",
     "@temporalio/workflow": "^1.15.0",
+    "axios": "^1.13.5",
     "dotenv": "^17.3.1",
     "jstat": "^1.9.6",
     "openai": "^6.22.0",
