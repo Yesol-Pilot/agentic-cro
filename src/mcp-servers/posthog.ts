@@ -1,9 +1,47 @@
 /**
- * PostHog MCP Server Connector
+ * PostHog MCP Server Connector — Phase R1 (Real API)
  * 
- * 역할: Data Analytics Agent가 이 커넥터를 통해 홈페이지의 클릭 데이터, 화면 이탈률 등의 텔레메트리를 가져옵니다.
+ * 역할: Data Analytics Agent가 이 커넥터를 통해 실제 PostHog 데이터를 가져옵니다.
  * 정책: API Key는 하드코딩하지 않고 process.env.POSTHOG_API_KEY를 통해 주입받습니다.
+ * 
+ * 지원 엔드포인트:
+ *   - events, persons, insights, feature_flags
+ *   - session_recordings, experiments, dashboards
+ *   - fetchFunnelDropoff (이벤트 기반 간이 퍼널)
+ *   - fetchSummary (전체 현황 통합 조회)
  */
+
+// ─── Types ─────────────────────────────────────────
+
+interface PostHogEvent {
+    id: string;
+    event: string;
+    timestamp: string;
+    properties: Record<string, unknown>;
+    distinct_id: string;
+}
+
+interface PostHogPerson {
+    id: string;
+    distinct_ids: string[];
+    properties: Record<string, unknown>;
+    created_at: string;
+}
+
+interface PostHogInsight {
+    id: number;
+    name: string;
+    filters: Record<string, unknown>;
+    result: unknown;
+}
+
+interface PostHogPaginatedResponse<T> {
+    results: T[];
+    next?: string;
+    count?: number;
+}
+
+// ─── Connector ─────────────────────────────────────
 
 export class PostHogMCPConnector {
     private apiKey: string;
@@ -13,81 +51,166 @@ export class PostHogMCPConnector {
     constructor() {
         this.apiKey = process.env.POSTHOG_API_KEY || '';
         this.projectId = process.env.POSTHOG_PROJECT_ID || '';
-        this.host = process.env.POSTHOG_HOST || 'https://app.posthog.com';
+        this.host = process.env.POSTHOG_HOST || 'https://us.posthog.com';
     }
 
     public async connect(): Promise<boolean> {
         if (!this.apiKey || !this.projectId) {
-            console.warn("⚠️ PostHog 자격 증명이 누락되었습니다. 데이터 수집이 Mock 모드로 작동합니다.");
+            console.warn("⚠️ PostHog 자격 증명이 누락되었습니다. .env에 POSTHOG_API_KEY/POSTHOG_PROJECT_ID를 설정하세요.");
             return false;
-        }
-        console.log("✅ PostHog MCP Endpoint Connected.");
-        return true;
-    }
-
-    /**
-     * 퍼널 이탈률 보고서를 실제 PostHog Management API로부터 Fetch 합니다.
-     * @param funnelId 
-     */
-    public async fetchFunnelDropoff(funnelId: string): Promise<{ step: string, dropOffRate: number, description: string }> {
-        if (!this.apiKey || !this.projectId || this.apiKey === 'dummy_key') {
-            console.warn(`[PostHog] ⚠️ 유효한 API Key가 없습니다. Fallback Mock 데이터를 반환합니다.`);
-            return {
-                step: funnelId,
-                dropOffRate: 23.5,
-                description: "Mock: Step 2 단계에서 23.5%의 사용자가 이탈합니다."
-            };
         }
 
         try {
-            console.log(`📡 [PostHog API] Real 통신: ${this.host} 으로부터 Funnel(${funnelId}) Fetching...`);
+            // 연결 테스트: dashboards 엔드포인트로 인증 확인
+            await this.apiRequest<PostHogPaginatedResponse<unknown>>('/dashboards/?limit=1');
+            console.log("✅ PostHog MCP Endpoint Connected. (Real API, Project: " + this.projectId + ")");
+            return true;
+        } catch (e: any) {
+            console.error("❌ PostHog 연결 실패:", e.message);
+            return false;
+        }
+    }
 
-            // 실제 PostHog Management API를 통해 특정 Insight(퍼널) 데이터를 가져옵니다.
-            const res = await fetch(`${this.host}/api/projects/${this.projectId}/insights/${funnelId}`, {
-                method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${this.apiKey}`,
-                    'Content-Type': 'application/json'
-                }
-            });
+    // ─── Core API Request ──────────────────────────
 
-            if (!res.ok) {
-                throw new Error(`PostHog API 응답 에러: ${res.status} ${res.statusText}`);
+    private async apiRequest<T = unknown>(path: string, options?: RequestInit): Promise<T> {
+        const url = `${this.host}/api/projects/${this.projectId}${path}`;
+        const res = await fetch(url, {
+            ...options,
+            headers: {
+                'Authorization': `Bearer ${this.apiKey}`,
+                'Content-Type': 'application/json',
+                ...(options?.headers || {}),
+            },
+        });
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '');
+            throw new Error(`PostHog API ${res.status} @ ${path}: ${body.substring(0, 200)}`);
+        }
+
+        return res.json() as Promise<T>;
+    }
+
+    // ─── Events ────────────────────────────────────
+
+    public async fetchEvents(limit = 10, eventName?: string): Promise<PostHogEvent[]> {
+        let path = `/events/?limit=${limit}`;
+        if (eventName) path += `&event=${encodeURIComponent(eventName)}`;
+
+        const data = await this.apiRequest<PostHogPaginatedResponse<PostHogEvent>>(path);
+        console.log(`📡 [PostHog] Events: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Persons ───────────────────────────────────
+
+    public async fetchPersons(limit = 10): Promise<PostHogPerson[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<PostHogPerson>>(`/persons/?limit=${limit}`);
+        console.log(`📡 [PostHog] Persons: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Insights ──────────────────────────────────
+
+    public async fetchInsights(limit = 10): Promise<PostHogInsight[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<PostHogInsight>>(`/insights/?limit=${limit}`);
+        console.log(`📡 [PostHog] Insights: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Feature Flags ─────────────────────────────
+
+    public async fetchFeatureFlags(): Promise<unknown[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<unknown>>('/feature_flags/');
+        console.log(`📡 [PostHog] Feature Flags: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Session Recordings ────────────────────────
+
+    public async fetchSessionRecordings(limit = 5): Promise<unknown[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<unknown>>(`/session_recordings/?limit=${limit}`);
+        console.log(`📡 [PostHog] Session Recordings: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Experiments ───────────────────────────────
+
+    public async fetchExperiments(): Promise<unknown[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<unknown>>('/experiments/');
+        console.log(`📡 [PostHog] Experiments: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Dashboards ────────────────────────────────
+
+    public async fetchDashboards(): Promise<unknown[]> {
+        const data = await this.apiRequest<PostHogPaginatedResponse<unknown>>('/dashboards/');
+        console.log(`📡 [PostHog] Dashboards: ${data.results.length}건`);
+        return data.results;
+    }
+
+    // ─── Funnel Dropoff (CRO 핵심) ─────────────────
+
+    public async fetchFunnelDropoff(funnelId: string): Promise<{ step: string; dropOffRate: number; description: string }> {
+        try {
+            const events = await this.fetchEvents(100);
+
+            if (events.length === 0) {
+                return {
+                    step: funnelId,
+                    dropOffRate: 0,
+                    description: `베이스라인 수집 중 — 이벤트 0건. PostHog 인제스트 지연(최대 1시간) 또는 사이트 트래픽 부족.`,
+                };
             }
 
-            const data = await res.json();
+            // 이벤트 기반 간이 퍼널 분석
+            const pageviews = events.filter(e => e.event === '$pageview').length;
+            const scrollDepth = events.filter(e => e.event === 'scroll_depth').length;
+            const ctaViewport = events.filter(e => e.event === 'cta_viewport_reached').length;
+            const ctaClicks = events.filter(e => e.event === 'cta_click').length;
+            const affiliateClicks = events.filter(e => e.event === 'affiliate_click').length;
 
-            // PostHog 퍼널 응답 구조체에서 이탈률 및 정보를 파싱 (응답 스펙에 맞게 조정 필요)
-            // ex) data.result 배열 안의 스텝간 conversion rate 등을 계산
-            // 여기서는 실제 응답 포맷이라 가정하고 안전하게 추출
-            const resultList = data.result || [];
-
-            if (resultList.length < 2) {
-                throw new Error("분석할 퍼널 단계가 2개 이상 구축되지 않았습니다.");
-            }
-
-            // 첫 단계 유입 대비 마지막 단계 전환율을 기반으로 이탈률 산출
-            const initialCount = resultList[0].count;
-            const dropoffStepCount = resultList[resultList.length - 1].count;
-
-            if (initialCount === 0) throw new Error("분석할 트래픽 데이터가 없습니다.");
-
-            const conversionRate = (dropoffStepCount / initialCount) * 100;
-            const dropOffRate = Number((100 - conversionRate).toFixed(2));
+            const dropOffRate = pageviews > 0 ? Math.round((1 - ctaClicks / pageviews) * 1000) / 10 : 0;
 
             return {
                 step: funnelId,
-                dropOffRate: dropOffRate,
-                description: `실제 데이터 기반: 첫 퍼널 진입자 ${initialCount}명 중 ${dropoffStepCount}명만 도달하여 최종 이탈률은 ${dropOffRate}% 입니다.`
+                dropOffRate,
+                description: [
+                    `L1 Pageview: ${pageviews}`,
+                    `L2 Scroll 75%: ${scrollDepth}`,
+                    `L3 CTA Viewport: ${ctaViewport}`,
+                    `L4 CTA Click: ${ctaClicks}`,
+                    `L5 Affiliate: ${affiliateClicks}`,
+                    `→ 이탈률: ${dropOffRate}%`,
+                ].join(' | '),
             };
         } catch (e: any) {
-            console.error("❌ PostHog Fetch Error:", e.message);
-            // 에러 발생 시 시스템 붕괴를 막기 위한 Fallback
-            return {
-                step: funnelId,
-                dropOffRate: 20.0,
-                description: `Fallback: 실제 통신 실패(${e.message})로 인한 안전 모드 20.0% 할당`
-            };
+            console.error("PostHog Funnel Error:", e.message);
+            return { step: funnelId, dropOffRate: -1, description: `에러: ${e.message}` };
         }
+    }
+
+    // ─── Summary (전체 현황 통합 조회) ──────────────
+
+    public async fetchSummary(): Promise<Record<string, number>> {
+        const safeCount = async (fn: () => Promise<unknown[]>) => {
+            try { return (await fn()).length; } catch { return -1; }
+        };
+
+        const [events, persons, insights, flags, recordings, experiments, dashboards] = await Promise.all([
+            safeCount(() => this.fetchEvents(1)),
+            safeCount(() => this.fetchPersons(1)),
+            safeCount(() => this.fetchInsights(1)),
+            safeCount(() => this.fetchFeatureFlags()),
+            safeCount(() => this.fetchSessionRecordings(1)),
+            safeCount(() => this.fetchExperiments()),
+            safeCount(() => this.fetchDashboards()),
+        ]);
+
+        const summary = { events, persons, insights, flags, recordings, experiments, dashboards };
+        console.log(`\n📊 PostHog Summary:`, JSON.stringify(summary, null, 2));
+        return summary;
     }
 }
