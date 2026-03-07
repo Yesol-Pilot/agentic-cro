@@ -1,6 +1,6 @@
 import { Project, SyntaxKind, JsxAttribute, CallExpression, Node } from 'ts-morph';
 import { twMerge } from 'tailwind-merge';
-import * as prettier from 'prettier';
+// Prettier는 ESM 전용이므로 동적 로딩 (Jest CommonJS 환경 호환)
 
 /**
  * 프론트엔드 에이전트가 출력한 JSON 포맷의 Operations 배열 구조.
@@ -63,8 +63,26 @@ export async function applySurgicalASTPatch(targetFilePath: string, operations: 
                         const expr = initializer.getExpression();
                         if (!expr) continue;
 
-                        if (Node.isTemplateExpression(expr) || Node.isNoSubstitutionTemplateLiteral(expr)) {
-                            console.warn(`[AST Modifier] TemplateLiteral 감지됨. 덮어쓰기 대신 경고 처리. 변경 생략.`);
+                        if (Node.isTemplateExpression(expr)) {
+                            // Case C: TemplateLiteral — 전체 표현식을 재구성하여 클래스 추가
+                            const newClasses = op.classesToAdd.join(' ');
+                            const originalText = expr.getText();
+                            // 마지막 백틱 앞에 클래스 삽입: `...${foo}` → `...${foo} newClasses`
+                            const injected = originalText.slice(0, -1) + ` ${newClasses}` + originalText.slice(-1);
+                            expr.replaceWithText(injected);
+                            isModified = true;
+                            hasChanges = true;
+                            console.log(`[AST Modifier] ✅ TemplateLiteral 뒤에 클래스 주입: ${newClasses}`);
+                        }
+                        else if (Node.isNoSubstitutionTemplateLiteral(expr)) {
+                            const currentVal = expr.getLiteralText();
+                            let merged = twMerge(currentVal, ...op.classesToAdd);
+                            op.classesToRemove?.forEach(cls => {
+                                merged = merged.replace(new RegExp(`\\b${cls}\\b`, 'g'), '').trim();
+                            });
+                            expr.setLiteralValue(merged);
+                            isModified = true;
+                            hasChanges = true;
                         }
                         else if (Node.isCallExpression(expr)) {
                             const callExpr = expr as CallExpression;
@@ -82,6 +100,16 @@ export async function applySurgicalASTPatch(targetFilePath: string, operations: 
                             isModified = true;
                             hasChanges = true;
                         }
+                        else {
+                            // Case D: Identifier 또는 기타 표현식 — 템플릿 리터럴로 래핑
+                            // className={buttonClass} → className={`${buttonClass} newClasses`}
+                            const newClasses = op.classesToAdd.join(' ');
+                            const originalText = expr.getText();
+                            initializer.replaceWithText(`{\`\${${originalText}} ${newClasses}\`}`);
+                            isModified = true;
+                            hasChanges = true;
+                            console.log(`[AST Modifier] ✅ Identifier/Expression → TemplateLiteral 래핑 + 클래스 주입: ${newClasses}`);
+                        }
                     }
 
                     // 🚨 [가역성 주입 로직] HTML Data Attribute 주입 및 Fragment/3rd-Party 래퍼(Wrapper) Fallback
@@ -91,12 +119,14 @@ export async function applySurgicalASTPatch(targetFilePath: string, operations: 
 
                         if (isFragment || isCustomComponent) {
                             console.log(`[AST Modifier] ⚠️ Fragment 또는 3rd-Party 커스텀 컴포넌트 감지. DOM 오염 방지를 위해 Semantic Wrapper를 적용합니다.`);
-                            // Fallback: 레이아웃에 전혀 영향을 주지 않는 CSS 'display: contents' 가역성 래퍼 주입
-                            // 노드를 감싼 뒤 변이 탐색을 안전하게 종료합니다 (메모리 구조 변경에 의한 Cursor 예외 방지).
-                            const originalText = jsxElement.getText();
-                            jsxElement.replaceWithText(`<span data-cro-agent="${hypothesisId}" style={{ display: 'contents' }}>\n${originalText}\n</span>`);
+                            // Fallback: 부모 JsxElement 전체를 교체 (Opening 태그만 교체하면 JSX 트리 파괴)
+                            const parentJsx = Node.isJsxOpeningElement(jsxElement) ? jsxElement.getParent() : jsxElement;
+                            if (parentJsx && !parentJsx.wasForgotten()) {
+                                const originalText = parentJsx.getText();
+                                parentJsx.replaceWithText(`<span data-cro-agent="${hypothesisId}" style={{ display: 'contents' }}>\n${originalText}\n</span>`);
+                            }
                             hasChanges = true;
-                            break; // 래퍼 적용 후 더 이상 동일 계층을 횡단하지 않고 안전하게 탈출
+                            break;
                         } else {
                             const existingDataAgent = jsxElement.getAttribute('data-cro-agent');
                             if (!existingDataAgent) {
@@ -189,6 +219,7 @@ export async function rollbackSurgicalASTPatch(targetFilePath: string, hypothesi
 
 async function formatWithPrettier(targetFilePath: string, rawText: string): Promise<boolean> {
     try {
+        const prettier = await import('prettier');
         const formattedText = await prettier.format(rawText, {
             parser: "typescript",
             singleQuote: true,
@@ -200,7 +231,7 @@ async function formatWithPrettier(targetFilePath: string, rawText: string): Prom
         console.log(`[AST Modifier] ✅ 파일 포매팅 완료: ${targetFilePath}`);
         return true;
     } catch (e: any) {
-        console.error(`[AST Modifier] Prettier 자동 포매팅 실패: ${e.message}`);
+        console.warn(`[AST Modifier] ⚠️ Prettier 포매팅 스킵 (비치명적): ${e.message}`);
         return true;
     }
 }

@@ -26,7 +26,7 @@ export class FrontendDevAgent extends BaseAgent {
                     userPrompt,
                     CodePatchSchema,
                     'code_patch_ast_output',
-                    'gemini-2.5-flash'
+                    'gemini-3.1-pro-preview'
                 );
                 console.log(`[FrontendDev] 🧠 LLM AST 패치 생성 성공!`);
             } catch (err: any) {
