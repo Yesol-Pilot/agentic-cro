@@ -1,19 +1,19 @@
-/**
- * [Phase MVP] Temporal Workflow — 결정론적 코드만 포함
- * 
- * ⚠️ 이 파일에는 @temporalio/workflow의 API만 사용 가능합니다.
- *    - @temporalio/client ❌
- *    - crypto ❌  
- *    - fs, path, os ❌
- *    - 비결정적 코드 전부 ❌
- */
-import { proxyActivities } from '@temporalio/workflow';
+import { proxyActivities, sleep, continueAsNew, ApplicationFailure, defineSignal, setHandler, condition, defineQuery } from '@temporalio/workflow';
 
-// 액티비티 프록시 (비결정적 외부 호출은 반드시 Activity로 분리)
+// HITL 승인 시그널 및 상태 쿼리 정의
+export const approveDeploymentSignal = defineSignal('approveDeployment');
+export const getFlywheelStatusQuery = defineQuery<any>('getFlywheelStatus');
+
 const {
     analyzeTrafficActivity,
-    generateHypothesisActivity,
-    applyASTAndCreatePRActivity
+    runAICodeGenerationActivity,
+    runBrowserlessQAActivity,
+    triggerDeploymentActivity,
+    waitForCiCdStatusActivity,
+    enableFeatureFlagActivity,
+    sendHITLReportActivity,
+    checkTenantCreditActivity,
+    reportToNeoGenesisActivity
 } = proxyActivities<any>({
     startToCloseTimeout: '10m',
     retry: {
@@ -29,35 +29,69 @@ const {
     }
 });
 
-/**
- * [Phase MVP] The Durable Singularity — 3-Step Workflow
- * 
- * Temporal 엔진 위에서 구동:
- * 1. analyzeTrafficActivity  — PostHog 데이터 수집
- * 2. generateHypothesisActivity — Gemini 3.1 Pro 추론
- * 3. applyASTAndCreatePRActivity — ts-morph AST 수술 + PR 생성
- * 
- * 프로세스 다운 시 완료된 Step의 결과는 Event History에 보존되어
- * 워커 재기동 시 중단 지점부터 자동 재개됩니다.
- */
-export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0 }): Promise<string> {
-    console.log(`[Workflow] 🌀 Durable E2E 사이클 시작 (Wins: ${iterationContext.wins})`);
+// Workflow execution must be completely deterministic (No Node Built-ins, No Math.random)
+export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0, targetUrl: '', tenantId: 'default-tenant' }): Promise<void> {
+    const currentTenant = iterationContext.tenantId || 'default-tenant';
+    console.log(`[Temporal Workflow] 🌀 테넌트(${currentTenant}) 자율 A/B 테스트 사이클 시작 (Wins: ${iterationContext.wins}, Target: ${iterationContext.targetUrl})`);
 
-    // Step 1: 트래픽 분석
-    console.log(`[Workflow] ▶ Step 1/3: analyzeTrafficActivity`);
-    const trafficData = await analyzeTrafficActivity();
-    console.log(`[Workflow] ✅ Step 1/3 완료`);
+    let status = 'RUNNING';
+    let isApproved = false;
 
-    // Step 2: AI 가설 생성 (Gemini 3.1 Pro)
-    console.log(`[Workflow] ▶ Step 2/3: generateHypothesisActivity`);
-    const codePatch = await generateHypothesisActivity(trafficData);
-    console.log(`[Workflow] ✅ Step 2/3 완료`);
+    setHandler(getFlywheelStatusQuery, () => ({ status, wins: iterationContext.wins }));
+    setHandler(approveDeploymentSignal, () => {
+        isApproved = true;
+    });
 
-    // Step 3: AST 수술 + PR 생성
-    console.log(`[Workflow] ▶ Step 3/3: applyASTAndCreatePRActivity`);
-    const prUrl = await applyASTAndCreatePRActivity(codePatch);
-    console.log(`[Workflow] ✅ Step 3/3 완료`);
+    try {
+        const targetFunnel = await analyzeTrafficActivity(iterationContext.targetUrl);
 
-    console.log(`[Workflow] 🎯 Durable Singularity 1회전 완료! PR: ${prUrl}`);
-    return prUrl;
+        if (iterationContext.wins >= 5) {
+            console.log(`[Temporal Workflow] ⚠️ 컴포넌트 승리 누적 도달. Refactoring Epoch 발동!`);
+            iterationContext.wins = 0;
+        } else {
+            console.log(`[Temporal Workflow] 🛡️ 테넌트 크레딧 차감 여부(Rate-Limit 검사)를 진행합니다.`);
+            await checkTenantCreditActivity(currentTenant);
+
+            const patchResult = await runAICodeGenerationActivity(targetFunnel);
+            const qaPassed = await runBrowserlessQAActivity(patchResult?.components);
+
+            if (qaPassed) {
+                console.log(`[Temporal Workflow] 📦 AST 패치를 적용한 PR을 고객사 저장소에 생성합니다.`);
+                await triggerDeploymentActivity(patchResult);
+
+                console.log(`[Temporal Workflow] 🔄 생성된 PR의 CI/CD 통과 여부를 대기합니다...`);
+                await waitForCiCdStatusActivity(patchResult);
+
+                await sendHITLReportActivity(patchResult);
+                console.log(`[Temporal Workflow] ⏳ 운영자 승인(HITL)을 대기합니다... (최대 24시간)`);
+
+                status = 'WAITING_FOR_APPROVAL';
+                const isSignaled = await condition(() => isApproved, '24h');
+                status = 'RUNNING';
+
+                if (!isSignaled) {
+                    console.log(`[Temporal Workflow] ⏰ 24시간 타임아웃 만료. 가설이 기각(Discard) 처리됩니다.`);
+                    throw ApplicationFailure.create({
+                        message: 'HITL Approval Timeout exceeded',
+                        type: 'HITL_TIMEOUT',
+                        nonRetryable: true
+                    });
+                }
+
+                console.log(`[Temporal Workflow] ✅ 관리자 승인(Approve) 수신. Feature Flag를 실시간 활성화합니다.`);
+                await enableFeatureFlagActivity(patchResult);
+                iterationContext.wins += 1;
+            }
+        }
+
+        // 본사 관제탑 (Neo-Genesis 7700 포트)에 에폭 1사이클 진행 상황 보고
+        console.log(`[Temporal Workflow] 🌉 본사 SBU 브릿지 통신 시도 시뮬레이션...`);
+        await reportToNeoGenesisActivity(currentTenant, iterationContext.wins, iterationContext.wins >= 5);
+
+    } catch (err: any) {
+        console.log(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err?.message}`);
+    } finally {
+        await sleep('10s');
+        await continueAsNew(iterationContext);
+    }
 }

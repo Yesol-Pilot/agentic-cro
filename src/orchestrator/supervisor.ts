@@ -65,10 +65,10 @@ export class SupervisorAgent extends BaseAgent {
         const workflowId = `agentic-cro-flywheel-${crypto.randomUUID()}`;
 
         try {
-            const handle = await this.temporalClient.workflow.start(optimizationFlywheelWorkflow, {
+            const handle = await this.temporalClient.workflow.start('optimizationFlywheelWorkflow', {
                 taskQueue: 'agentic-cro-tasks',
                 workflowId: workflowId,
-                args: [{ wins: 0 }]
+                args: [{ wins: 0, targetUrl: 'http://localhost:3001/components/CheckoutButton.tsx' }]
             });
             console.log(`[Supervisor] 🎯 Temporal Workflow [${handle.workflowId}] 가동 시작 완료!`);
         } catch (err) {
@@ -85,63 +85,6 @@ export class SupervisorAgent extends BaseAgent {
     }
 }
 
-// =========================================================================
-// Phase 9: Temporal.io Durable Execution & Idempotent Retry Policy
-// =========================================================================
-import { proxyActivities, sleep, continueAsNew, ApplicationFailure, defineSignal, setHandler, condition } from '@temporalio/workflow';
-
-// HITL 승인 시그널 정의
-export const approveDeploymentSignal = defineSignal('approveDeployment');
-
-const {
-    analyzeTrafficActivity,
-    generateHypothesisActivity,
-    applyASTAndCreatePRActivity
-} = proxyActivities<any>({
-    startToCloseTimeout: '10m', // Github clone, LLM call, etc.
-    retry: {
-        initialInterval: '2s',
-        backoffCoefficient: 2.0,
-        maximumInterval: '1m',
-        maximumAttempts: 10,
-        nonRetryableErrorTypes: [
-            'LLM_CONTEXT_LIMIT_EXCEEDED',
-            'UNAUTHORIZED_API_KEY',
-            'FATAL_AST_SYNTAX_ERROR'
-        ]
-    }
-});
-
-/**
- * [Phase MVP] The Durable Singularity - T-E2E v3 Workflow
- */
-export async function optimizationFlywheelWorkflow(iterationContext: any = { wins: 0 }): Promise<void> {
-    console.log(`[Temporal Workflow] 🌀 자율 A/B 테스트 사이클 시작 (Wins: ${iterationContext.wins})`);
-
-    try {
-        // Step 1: 트래픽 분석 (DataAnalytics Activity)
-        console.log(`[Workflow] Step 1: analyzeTrafficActivity 호출중...`);
-        const trafficData = await analyzeTrafficActivity();
-
-        // Step 2: 가설 기반 코드 생성 (FrontendDev Activity)
-        console.log(`[Workflow] Step 2: generateHypothesisActivity 호출중...`);
-        const codePatch = await generateHypothesisActivity(trafficData);
-
-        // Step 3: AST 수술 및 GitHub PR 생성 (Deployment Activity)
-        console.log(`[Workflow] Step 3: applyASTAndCreatePRActivity 호출중...`);
-        const prUrl = await applyASTAndCreatePRActivity(codePatch);
-
-        console.log(`[Temporal Workflow] ✅ 사이클 1회전 완료! PR 개설: ${prUrl}`);
-        iterationContext.wins += 1;
-
-    } catch (err: any) {
-        console.error(`[Temporal Workflow] ❌ 워크플로우 진행 중 에러: ${err.message}`);
-        throw err; // 워크플로우 실패로 기록
-    } finally {
-        isGlobalMutexLocked = false;
-        // 연속 실행을 원하지 않으면 continueAsNew는 생략하거나 대기 후 호출
-    }
-}
 
 
 /**

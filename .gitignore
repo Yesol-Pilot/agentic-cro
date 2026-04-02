@@ -1,9 +1,14 @@
 node_modules/
-.env
-.agent/
+dist/
 *.log
-*.txt
-README_utf8.md
-dev_output.txt
-deep_research_report.md
-desktop.ini
+.env
+
+# OCI SSH Keys (절대 Git에 올리지 않음)
+deploy/oci-ssh.key
+deploy/oci-ssh.key.pub
+deploy/.env.production
+
+# 임시 파일
+merge-pr5.js
+starter-log*.txt
+worker-log*.txttemporal.exe
